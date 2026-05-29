@@ -8,3 +8,5 @@ from app.db.base_class import Base
 # 👇 This is REQUIRED so Alembic can detect the table
 from app.models.user import User
 from app.models.restaurant import Restaurant
+from app.models.category import Category
+from app.models.menu_item import MenuItem

@@ -55,3 +55,15 @@ class Restaurant(Base):
         "User",
         back_populates="restaurants",
     )
+
+    categories = relationship(
+    "Category",
+    back_populates="restaurant",
+    cascade="all, delete-orphan"
+    )
+
+    menu_items = relationship(
+        "MenuItem",
+        back_populates="restaurant",
+        cascade="all, delete-orphan"
+    )
