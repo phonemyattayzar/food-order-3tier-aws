@@ -1,162 +1,106 @@
-# Byte-compiled / optimized / DLL files
+# =========================
+# Python Bytecode
+# =========================
 __pycache__/
 *.py[cod]
 *$py.class
 
+# =========================
 # C extensions
+# =========================
 *.so
 
-# Distribution / packaging
-.Python
+# =========================
+# Build / Distribution
+# =========================
 build/
-develop-eggs/
 dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
 
-# Pyinstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-/*.manifest
-/*.spec
+# PyInstaller
+*.manifest
+*.spec
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit tests / coverage reports
+# =========================
+# Logs / Tests / Coverage
+# =========================
+*.log
 htmlcov/
 .tox/
 .nox/
-.coverage
-.coverage.*
+.coverage*
 .cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
 .pytest_cache/
-cover/
+.hypothesis/
 
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-local_settings.py
+# =========================
+# Frameworks
+# =========================
 db.sqlite3
 db.sqlite3-journal
-
-# Flask stuff:
 instance/
 .webassets-cache
-
-# Scrapy stuff:
 .scrapy
-
-# Sphinx documentation
 docs/_build/
-
-# PyBuilder
 .pybuilder/
 target/
 
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-#   For a library or package, you might want to share your .python-version.
-#   For an app, this is usually fine to prevent git tracking.
-# .python-version
-
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in git.
-#   However, if you're building an library, you should ignore Pipfile.lock.
-#  Pipfile.lock
-
-# poetry
-#   Similar to Pipfile.lock, poetry.lock is generally committed, but can be ignored.
-#  poetry.lock
-
-# pdm
-#   Similar to Pipfile.lock, pdm.lock is generally committed, but can be ignored.
-# .pdm-plugins/
-# .pdm-db/
-
-# PIP / Poetry local virtual environments
-.venv/
+# =========================
+# Virtual Environments
+# =========================
 venv/
+.venv/
 ENV/
 env/
-**/venv/
-**/.venv/
 
-# Spyder project settings
+# =========================
+# IDE / Editors
+# =========================
+.idea/
+.vscode/
 .spyderproject
 .spyproject
-
-# Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# PyCharm / IntelliJ
-.idea/
-
-# VS Code
-.vscode/
-
-# Operating System files
+# =========================
+# OS Files
+# =========================
 .DS_Store
 .DS_Store?
 ._*
 .Spotlight-V100
 .Trashes
-ehthumbs.db
 Thumbs.db
 
-# Environment files
+# =========================
+# Environment Variables
+# =========================
 .env
-.env.local
-.env.*.local
-*.env
+.env.*
 !.env.example
 
-# Docker local data (if any volume is mapped to a local folder in the future)
+# =========================
+# Docker / Tools
+# =========================
 .docker/
-
-# Antigravity CLI artifacts
 .antigravitycli/
+
+# =========================
+# Node (frontend)
+# =========================
+node_modules/
+dist/
+
+# =========================
+# Personal / Local notes
+# =========================
+entity.txt
+MEMORY.md
+pair-senior.txt
+schema_design.md
