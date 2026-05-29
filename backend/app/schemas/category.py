@@ -11,6 +11,11 @@ class CategoryCreate(CategoryBase):
     restaurant_id: UUID
 
 
+class CategoryUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
 class CategoryOut(CategoryBase):
     id: UUID
     restaurant_id: UUID

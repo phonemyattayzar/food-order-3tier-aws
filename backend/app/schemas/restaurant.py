@@ -1,7 +1,14 @@
+from enum import Enum
 from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, field_validator
+
+
+class RestaurantStatus(str, Enum):
+    pending = "pending"
+    approved = "approved"
+    suspended = "suspended"
 
 
 class RestaurantBase(BaseModel):
@@ -35,6 +42,7 @@ class RestaurantCreate(RestaurantBase):
 class RestaurantOut(RestaurantBase):
     id: UUID
     owner_id: UUID
+    status: RestaurantStatus
     logo_url: str | None = None
     cover_image_url: str | None = None
     created_at: datetime

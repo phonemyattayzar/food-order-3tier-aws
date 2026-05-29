@@ -1,11 +1,17 @@
 import uuid
-
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text
+import enum
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text, Enum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from app.db.base_class import Base
+
+
+class RestaurantStatus(str, enum.Enum):
+    pending = "pending"
+    approved = "approved"
+    suspended = "suspended"
 
 
 class Restaurant(Base):
@@ -40,6 +46,14 @@ class Restaurant(Base):
 
     is_open = Column(Boolean, default=True)
 
+    status = Column(
+        Enum(RestaurantStatus, name="restaurant_status"),
+        nullable=False,
+        default=RestaurantStatus.pending,
+    )
+
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -69,3 +83,5 @@ class Restaurant(Base):
     )
 
     orders = relationship("Order", back_populates="restaurant")
+
+    reviews = relationship("Review", back_populates="restaurant", cascade="all, delete-orphan")

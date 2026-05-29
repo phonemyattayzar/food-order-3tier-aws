@@ -13,7 +13,7 @@ class OrderCreate(BaseModel):
     restaurant_id: UUID
     delivery_address: str
     items: List[OrderItemCreate]
-
+    coupon_code: str | None = None
 
 
 class OrderItemOut(BaseModel):
@@ -35,6 +35,21 @@ class OrderOut(BaseModel):
     order_status: str
     total_amount_mmk: int
     delivery_address: str
-    created_at: datetime
+    
+    rejection_reason: str | None = None
+    accepted_at: datetime | None = None
+    prepared_at: datetime | None = None
+    dispatched_at: datetime | None = None
+    delivered_at: datetime | None = None
+    cancelled_at: datetime | None = None
 
-    order_items: List[OrderItemOut]
+    created_at: datetime
+    updated_at: datetime | None = None
+    restaurant_name: str | None = None
+
+    order_items: List[OrderItemOut] = []
+
+
+class OrderStatusUpdate(BaseModel):
+    status: str
+    rejection_reason: str | None = None

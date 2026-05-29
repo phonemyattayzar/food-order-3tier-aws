@@ -12,9 +12,10 @@ class OrderStatus(str, enum.Enum):
     pending = "pending"
     confirmed = "confirmed"
     preparing = "preparing"
-    delivering = "delivering"
+    out_for_delivery = "out_for_delivery"
     completed = "completed"
     cancelled = "cancelled"
+    rejected = "rejected"
 
 class Order(Base):
     __tablename__ = "orders"
@@ -32,6 +33,15 @@ class Order(Base):
 
     delivery_address = Column(Text, nullable=False)
 
+    rejection_reason = Column(Text, nullable=True)
+
+    # Status change timestamps
+    accepted_at = Column(DateTime, nullable=True)
+    prepared_at = Column(DateTime, nullable=True)
+    dispatched_at = Column(DateTime, nullable=True)
+    delivered_at = Column(DateTime, nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -39,3 +49,4 @@ class Order(Base):
     user = relationship("User", back_populates="orders")
     restaurant = relationship("Restaurant", back_populates="orders")
     order_items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
+    notifications = relationship("Notification", back_populates="order", cascade="all, delete-orphan")
