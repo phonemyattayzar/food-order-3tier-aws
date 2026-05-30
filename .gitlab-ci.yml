@@ -36,7 +36,8 @@ stages:
         --opt platform=linux/amd64 \
         ${BUILDKIT_EXTRA_OPTS} \
         --output type=image,name=$IMAGE_NAME,push=true
-
+  tags:
+  - ec2-sar-mel-runner
 
 
 build:backend:
