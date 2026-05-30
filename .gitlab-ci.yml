@@ -13,11 +13,17 @@ stages:
   script:
     - test -n "${BUILD_CONTEXT_DIR}" || (echo "BUILD_CONTEXT_DIR is not set" && exit 1)
     - test -n "${TARGET_DOCKER_FILE}" || (echo "TARGET_DOCKER_FILE is not set" && exit 1)
-    - export REGISTRY_CLEAN=$(echo -n "$REGISTRY_FRONTIIR" | tr -d '\n')
+    - export REGISTRY_CLEAN=$(echo -n "$DEV_REGISTRY" | tr -d '\n')
     - export TARGET_NAME_CLEAN=$(echo -n "$TARGET_IMAGE_NAME" | tr -d '\n')
     - export CLEAN_TAG=$(echo -n "$TARGET_IMAGE_TAG" | tr -d '\n')
-    - export IMAGE_NAME="${REGISTRY_CLEAN}/${TARGET_NAME_CLEAN}:${CLEAN_TAG}"
-    - export CACHE_IMAGE="${REGISTRY_CLEAN}/${TARGET_NAME_CLEAN}:cache"
+    - |
+      if [ -z "$REGISTRY_CLEAN" ]; then
+        export IMAGE_NAME="${TARGET_NAME_CLEAN}:${CLEAN_TAG}"
+        export CACHE_IMAGE="${TARGET_NAME_CLEAN}:cache"
+      else
+        export IMAGE_NAME="${REGISTRY_CLEAN}/${TARGET_NAME_CLEAN}:${CLEAN_TAG}"
+        export CACHE_IMAGE="${REGISTRY_CLEAN}/${TARGET_NAME_CLEAN}:cache"
+      fi
     - echo "Building ${BUILD_CONTEXT_DIR}/${TARGET_DOCKER_FILE} → $IMAGE_NAME"
     - |
       buildctl-daemonless.sh build \
