@@ -1,52 +1,43 @@
 stages:
   - build
 
-
 .template-build: &template_build
-   stage: build 
-   image:
+  stage: build
+  image:
     name: moby/buildkit:rootless
     entrypoint: [""]
-   variables:
-      BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
-      TARGET_IMAGE_NAME: ""
-      TARGET_IMAGE_TAG: ""
-      TARGET_DOCKER_FILE: "Dockerfile"
-   before_script:
-    - mkdir -p ~/.docker
-    - echo "$DOCKER_CFG" > ~/.docker/config.json
+  variables:
+    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
+    TARGET_IMAGE_NAME: ""
+    TARGET_IMAGE_TAG: ""
+    TARGET_DOCKER_FILE: "Dockerfile"
 
-   script:
-  # Clean registry + image name to remove newlines
-    - export REGISTRY_CLEAN=$(echo -n "$REGISTRY_FRONTIIR" | tr -d '\n')
+  script:
+    - export REGISTRY_CLEAN=$(echo -n "$DEV_REGISTRY" | tr -d '\n')
     - export TARGET_NAME_CLEAN=$(echo -n "$TARGET_IMAGE_NAME" | tr -d '\n')
     - export CLEAN_TAG=$(echo -n "$TARGET_IMAGE_TAG" | tr -d '\n')
 
     - export IMAGE_NAME="${REGISTRY_CLEAN}/${TARGET_NAME_CLEAN}:${CLEAN_TAG}"
     - export CACHE_IMAGE="${REGISTRY_CLEAN}/${TARGET_NAME_CLEAN}:cache"
 
-    - echo "Building multi-arch image → $IMAGE_NAME"
+    - echo "Building → $IMAGE_NAME"
 
     - |
       buildctl-daemonless.sh build \
         --frontend dockerfile.v0 \
         --local context="${CI_PROJECT_DIR}" \
         --local dockerfile="${CI_PROJECT_DIR}" \
+        --opt filename="${TARGET_DOCKER_FILE}" \
         --export-cache type=registry,ref=$CACHE_IMAGE \
         --import-cache type=registry,ref=$CACHE_IMAGE \
         --opt platform=linux/amd64 \
         --output type=image,name=$IMAGE_NAME,push=true
 
 
-   tags:
-    - rnd-shared
-    - container-build
-
 build:
-  << : *template_build
+  <<: *template_build
   variables:
     TARGET_IMAGE_NAME: "${CI_PROJECT_PATH}"
     TARGET_IMAGE_TAG: "${CI_COMMIT_REF_SLUG}"
   only:
-    refs:
-      - containerization
+    - main
