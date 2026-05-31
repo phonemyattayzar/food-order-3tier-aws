@@ -2,7 +2,7 @@ import { Users, Store, ShoppingBag, DollarSign, Check, X, ShieldAlert, RefreshCw
 import { useEffect, useState } from "react";
 import { apiRequest, parseApiError } from "../api/client";
 
-export default function AdminDashboardView({ onBack }) {
+export default function AdminDashboardView({ onBack, onRestaurantStatusChanged }) {
   const [stats, setStats] = useState(null);
   const [users, setUsers] = useState([]);
   const [restaurants, setRestaurants] = useState([]);
@@ -55,8 +55,12 @@ export default function AdminDashboardView({ onBack }) {
       if (res.ok) {
         setRestaurants(prev => prev.filter(r => r.id !== restaurant_id));
         if (status === "approved") {
-          setStats(prev => ({ ...prev, total_restaurants: prev.total_restaurants + 1 }));
+          setStats(prev => ({
+            ...prev,
+            total_restaurants: (prev?.total_restaurants ?? 0) + 1,
+          }));
         }
+        onRestaurantStatusChanged?.();
       }
     } finally {
       setActionId(null);

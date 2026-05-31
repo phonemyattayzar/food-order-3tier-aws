@@ -4,14 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_optional_current_user
 from app.models.user import User, UserRole
-from app.models.restaurant import RestaurantStatus
 from app.schemas.restaurant import RestaurantCreate, RestaurantOut
 from app.crud.crud_restaurant import (
     create_restaurant,
-    get_multi_restaurants,
     get_restaurant,
+    get_restaurants_for_listing,
+    restaurant_visible_to_user,
 )
 
 router = APIRouter(prefix="/restaurants", tags=["restaurants"])
@@ -44,16 +44,15 @@ def list_restaurants(
     township: str | None = None,
     search: str | None = None,
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user),
 ):
-    # Customers only see approved restaurants
-    # In a real app, we might want to check the user role if logged in
-    return get_multi_restaurants(
-        db=db, 
-        skip=skip, 
-        limit=limit, 
-        status=RestaurantStatus.approved,
+    return get_restaurants_for_listing(
+        db=db,
+        current_user=current_user,
+        skip=skip,
+        limit=limit,
         township=township,
-        search=search
+        search=search,
     )
 
 
@@ -64,10 +63,11 @@ def list_restaurants(
 def get_restaurant_detail(
     restaurant_id: UUID,
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user),
 ):
     restaurant = get_restaurant(db=db, restaurant_id=restaurant_id)
 
-    if not restaurant or restaurant.deleted_at:
+    if not restaurant or not restaurant_visible_to_user(restaurant, current_user):
         raise HTTPException(
             status_code=404,
             detail="Restaurant not found",

@@ -10,6 +10,10 @@ from app.models.user import User, UserRole
 # OAuth2PasswordBearer defines where to get the token. 
 # Our login URL is /api/v1/login
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/login")
+oauth2_scheme_optional = OAuth2PasswordBearer(
+    tokenUrl="/api/v1/login",
+    auto_error=False,
+)
 
 
 def get_current_user(
@@ -44,6 +48,30 @@ def get_current_user(
             detail="Inactive user",
         )
 
+    return user
+
+
+def get_optional_current_user(
+    token: str | None = Depends(oauth2_scheme_optional),
+    db: Session = Depends(get_session),
+) -> User | None:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM],
+        )
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            return None
+    except JWTError:
+        return None
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None or not user.is_active:
+        return None
     return user
 
 

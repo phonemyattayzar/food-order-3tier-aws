@@ -187,9 +187,24 @@ export default function RestaurantListView({
               <div className="restaurant-info">
                 <div className="restaurant-title">
                   <span>{restaurant.name}</span>
-                  <span className={`restaurant-status ${restaurant.is_open ? "status-open" : "status-closed"}`}>
-                    {restaurant.is_open ? "Open" : "Closed"}
-                  </span>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px" }}>
+                    {restaurant.status && restaurant.status !== "approved" && (
+                      <span
+                        className="restaurant-status"
+                        style={{
+                          background: restaurant.status === "pending" ? "rgba(251, 191, 36, 0.15)" : "rgba(239, 68, 68, 0.15)",
+                          color: restaurant.status === "pending" ? "#f59e0b" : "#ef4444",
+                          fontSize: "0.6875rem",
+                          textTransform: "capitalize",
+                        }}
+                      >
+                        {restaurant.status === "pending" ? "Awaiting approval" : restaurant.status}
+                      </span>
+                    )}
+                    <span className={`restaurant-status ${restaurant.is_open ? "status-open" : "status-closed"}`}>
+                      {restaurant.is_open ? "Open" : "Closed"}
+                    </span>
+                  </div>
                 </div>
                 <p style={{ color: "var(--text-secondary)", fontSize: "0.8125rem", display: "-webkit-box", WebkitLineClamp: "2", WebkitBoxOrient: "vertical", overflow: "hidden", height: "36px", marginBottom: "8px" }}>
                   {restaurant.description || "No description provided."}

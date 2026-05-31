@@ -50,9 +50,11 @@ def update_restaurant_status(
     if restaurant:
         restaurant.status = status
         db.commit()
+        db.refresh(restaurant)
         create_audit_log(
             db, admin_id, f"update_status_{status.value}", "restaurant", str(restaurant_id)
         )
+        db.refresh(restaurant)
     return restaurant
 
 

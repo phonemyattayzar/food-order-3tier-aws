@@ -117,6 +117,7 @@ export default function App() {
   const establishSession = async (user) => {
     setActiveUser(user);
     localStorage.setItem("active_user", JSON.stringify(user));
+    fetchRestaurants(searchVal, townshipVal);
   };
 
   const restoreSession = async () => {
@@ -155,10 +156,13 @@ export default function App() {
       if (search) params.append("search", search);
       if (township) params.append("township", township);
       const queryStr = params.toString() ? `?${params.toString()}` : "";
-      
-      const { res, data } = await apiRequest(`/restaurants/${queryStr}`, { auth: false });
+      const path = queryStr ? `/restaurants/${queryStr}` : "/restaurants/";
+
+      const { res, data } = await apiRequest(path, { auth: true });
       if (res.ok) {
         setRestaurants(data);
+      } else {
+        showToast(parseApiError(data, "Could not load restaurants"), "error");
       }
     } catch {
       showToast("Could not load restaurants", "error");
@@ -810,7 +814,15 @@ export default function App() {
         ) : (
           <div>
             {showAdminDashboard ? (
-              <AdminDashboardView onBack={() => setShowAdminDashboard(false)} />
+              <AdminDashboardView
+                onBack={() => {
+                  setShowAdminDashboard(false);
+                  fetchRestaurants(searchVal, townshipVal);
+                }}
+                onRestaurantStatusChanged={() =>
+                  fetchRestaurants(searchVal, townshipVal)
+                }
+              />
             ) : showOwnerDashboard ? (
               <OwnerAnalyticsView onBack={() => setShowOwnerDashboard(false)} />
             ) : showOrderManagement ? (
