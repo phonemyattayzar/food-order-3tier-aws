@@ -12,9 +12,9 @@ stages:
     TARGET_DOCKER_FILE: Dockerfile
     SSL_CERT_DIR: /etc/ssl/certs
   before_script:
-    - mkdir -p /etc/ssl/certs
-    - cp /tmp/certs/ca.crt /usr/local/share/ca-certificates/registry.crt || true
-    - update-ca-certificates || true
+    - apk add --no-cache aws-cli
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION |
+      docker login --username AWS --password-stdin $ECR_REGISTRY
   script:
     - test -n "${BUILD_CONTEXT_DIR}" || (echo "BUILD_CONTEXT_DIR is not set" && exit 1)
     - test -n "${TARGET_DOCKER_FILE}" || (echo "TARGET_DOCKER_FILE is not set" && exit 1)
