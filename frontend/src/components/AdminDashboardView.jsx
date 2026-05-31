@@ -15,7 +15,7 @@ export default function AdminDashboardView({ onBack }) {
       const [statsRes, usersRes, restRes] = await Promise.all([
         apiRequest("/admin/stats"),
         apiRequest("/admin/users"),
-        apiRequest("/restaurants/?status=pending"),
+        apiRequest("/admin/restaurants?status=pending"),
       ]);
 
       if (statsRes.res.ok) setStats(statsRes.data);

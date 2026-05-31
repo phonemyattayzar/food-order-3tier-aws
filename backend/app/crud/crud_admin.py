@@ -58,7 +58,7 @@ def update_restaurant_status(
 
 def get_platform_stats(db: Session):
     total_users = db.query(func.count(User.id)).scalar()
-    total_restaurants = db.query(func.count(Restaurant.id)).scalar()
+    total_restaurants = db.query(func.count(Restaurant.id)).filter(Restaurant.status == RestaurantStatus.approved).scalar()
     total_orders = db.query(func.count(Order.id)).scalar()
     total_revenue = db.query(func.sum(Order.total_amount_mmk)).filter(Order.order_status == OrderStatus.completed).scalar() or 0
     

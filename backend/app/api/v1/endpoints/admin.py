@@ -66,10 +66,11 @@ def platform_stats(
 
 @router.get("/restaurants", response_model=list[RestaurantOut])
 def list_all_restaurants_for_admin(
+    status: RestaurantStatus | None = None,
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_session),
     current_admin: User = Depends(get_current_active_admin),
 ):
     from app.crud.crud_restaurant import get_multi_restaurants
-    return get_multi_restaurants(db=db, skip=skip, limit=limit)
+    return get_multi_restaurants(db=db, skip=skip, limit=limit, status=status)
