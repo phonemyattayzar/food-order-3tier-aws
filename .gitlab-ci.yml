@@ -10,13 +10,13 @@ aws-login:
   script:
     - mkdir -p .docker
     - |
-      if [ -z "$AWS_DEFAULT_REGION" ] || [ -z "$ECR_REGISTRY" ]; then
-        echo "Error: AWS_DEFAULT_REGION or ECR_REGISTRY is not set."
+      if [ -z "$AWS_DEFAULT_REGION" ] || [ -z "$DEV_REGISTRY" ]; then
+        echo "Error: AWS_DEFAULT_REGION or DEV_REGISTRY is not set."
         exit 1
       fi
     - PASSWORD=$(aws ecr get-login-password --region $AWS_DEFAULT_REGION)
     - AUTH=$(echo -n "AWS:$PASSWORD" | base64 | tr -d '\n')
-    - echo "{\"auths\":{\"$ECR_REGISTRY\":{\"auth\":\"$AUTH\"}}}" > .docker/config.json
+    - echo "{\"auths\":{\"$DEV_REGISTRY\":{\"auth\":\"$AUTH\"}}}" > .docker/config.json
   artifacts:
     paths:
       - .docker/config.json
@@ -48,8 +48,8 @@ aws-login:
         export IMAGE_NAME="${TARGET_NAME_CLEAN}:${CLEAN_TAG}"
         export CACHE_IMAGE="${TARGET_NAME_CLEAN}:cache"
       else
-        export IMAGE_NAME="${REGISTRY_CLEAN}:${TARGET_NAME_CLEAN}-${CLEAN_TAG}"
-        export CACHE_IMAGE="${REGISTRY_CLEAN}:${TARGET_NAME_CLEAN}-cache"
+        export IMAGE_NAME="${REGISTRY_CLEAN}/${TARGET_NAME_CLEAN}:${CLEAN_TAG}"
+        export CACHE_IMAGE="${REGISTRY_CLEAN}/${TARGET_NAME_CLEAN}:cache"
       fi
     - echo "Building ${BUILD_CONTEXT_DIR}/${TARGET_DOCKER_FILE} → $IMAGE_NAME"
     - |
@@ -58,11 +58,11 @@ aws-login:
         --local context="${CI_PROJECT_DIR}/${BUILD_CONTEXT_DIR}" \
         --local dockerfile="${CI_PROJECT_DIR}/${BUILD_CONTEXT_DIR}" \
         --opt filename="${TARGET_DOCKER_FILE}" \
-        --export-cache type=registry,ref=$CACHE_IMAGE,registry.insecure=true \
-        --import-cache type=registry,ref=$CACHE_IMAGE,registry.insecure=true \
+        --export-cache type=registry,ref=$CACHE_IMAGE \
+        --import-cache type=registry,ref=$CACHE_IMAGE \
         --opt platform=linux/amd64 \
         ${BUILDKIT_EXTRA_OPTS} \
-        --output type=image,name=$IMAGE_NAME,push=true,registry.insecure=true
+        --output type=image,name=$IMAGE_NAME,push=true
   tags:
   - mac
 
@@ -71,7 +71,7 @@ build:backend:
   extends: .template-build
   variables:
     BUILD_CONTEXT_DIR: backend
-    TARGET_IMAGE_NAME: "sar-mel-backend"
+    TARGET_IMAGE_NAME: "sar-mel/backend"
     TARGET_IMAGE_TAG: "latest"
   only:
     refs:
@@ -82,7 +82,7 @@ build:frontend:
   extends: .template-build
   variables:
     BUILD_CONTEXT_DIR: frontend
-    TARGET_IMAGE_NAME: "sar-mel-frontend"
+    TARGET_IMAGE_NAME: "sar-mel/frontend"
     TARGET_IMAGE_TAG: "latest"
   only:
     refs:
