@@ -72,7 +72,7 @@ build:backend:
   extends: .template-build
   variables:
     BUILD_CONTEXT_DIR: backend
-    TARGET_IMAGE_NAME: "backend"
+    TARGET_IMAGE_NAME: "sar-mel-backend"
     TARGET_IMAGE_TAG: "latest"
   only:
     refs:
@@ -83,7 +83,7 @@ build:frontend:
   extends: .template-build
   variables:
     BUILD_CONTEXT_DIR: frontend
-    TARGET_IMAGE_NAME: "frontend"
+    TARGET_IMAGE_NAME: "sar-mel-frontend"
     TARGET_IMAGE_TAG: "latest"
   only:
     refs:
