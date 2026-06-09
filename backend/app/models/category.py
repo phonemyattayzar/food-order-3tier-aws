@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Text, ForeignKey, DateTime
+from sqlalchemy import Column, String, Text, ForeignKey, DateTime, and_
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -20,4 +20,9 @@ class Category(Base):
 
     # Relationships
     restaurant = relationship("Restaurant", back_populates="categories")
-    menu_items = relationship("MenuItem", back_populates="category", cascade="all, delete-orphan")
+    menu_items = relationship(
+        "MenuItem",
+        primaryjoin="and_(MenuItem.category_id==Category.id, MenuItem.deleted_at==None)",
+        back_populates="category",
+        cascade="all, delete-orphan"
+    )

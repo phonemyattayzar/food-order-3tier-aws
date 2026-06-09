@@ -1,6 +1,6 @@
 import uuid
 import enum
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text, Enum
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text, Enum, and_
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -71,13 +71,15 @@ class Restaurant(Base):
     )
 
     categories = relationship(
-    "Category",
-    back_populates="restaurant",
-    cascade="all, delete-orphan"
+        "Category",
+        primaryjoin="and_(Category.restaurant_id==Restaurant.id, Category.deleted_at==None)",
+        back_populates="restaurant",
+        cascade="all, delete-orphan"
     )
 
     menu_items = relationship(
         "MenuItem",
+        primaryjoin="and_(MenuItem.restaurant_id==Restaurant.id, MenuItem.deleted_at==None)",
         back_populates="restaurant",
         cascade="all, delete-orphan"
     )
