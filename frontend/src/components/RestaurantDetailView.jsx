@@ -539,39 +539,41 @@ export default function RestaurantDetailView({
                                 </div>
                               </div>
 
-                              {canOrder && selectedRestaurant.is_open && item.is_available && (
-                                <div className="qty-controls">
-                                  {qty === 0 ? (
-                                    <button
-                                      type="button"
-                                      className="btn btn-primary"
-                                      style={{ padding: "6px 14px", fontSize: "0.8125rem" }}
-                                      onClick={() => onAddToCart(item)}
-                                    >
-                                      <PlusCircle size={14} />
-                                      <span>Add</span>
-                                    </button>
-                                  ) : (
-                                    <>
+                                {canOrder && selectedRestaurant.is_open && item.is_available && (
+                                  <div className="qty-controls">
+                                    {qty === 0 ? (
                                       <button
                                         type="button"
-                                        className="qty-btn"
-                                        onClick={() => onUpdateCartQty(item.id, qty - 1)}
-                                      >
-                                        <MinusCircle size={18} />
-                                      </button>
-                                      <span className="qty-value">{qty}</span>
-                                      <button
-                                        type="button"
-                                        className="qty-btn"
+                                        className="btn btn-primary"
+                                        style={{ padding: "6px 14px", fontSize: "0.8125rem" }}
                                         onClick={() => onAddToCart(item)}
                                       >
-                                        <PlusCircle size={18} />
+                                        <PlusCircle size={16} strokeWidth={2.5} />
+                                        <span>Add</span>
                                       </button>
-                                    </>
-                                  )}
-                                </div>
-                              )}
+                                    ) : (
+                                      <>
+                                        <button
+                                          type="button"
+                                          className="qty-btn"
+                                          onClick={() => onUpdateCartQty(item.id, qty - 1)}
+                                          aria-label="Decrease quantity"
+                                        >
+                                          <MinusCircle size={20} strokeWidth={2.5} />
+                                        </button>
+                                        <span className="qty-value">{qty}</span>
+                                        <button
+                                          type="button"
+                                          className="qty-btn"
+                                          onClick={() => onAddToCart(item)}
+                                          aria-label="Increase quantity"
+                                        >
+                                          <PlusCircle size={20} strokeWidth={2.5} />
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
+                                )}
                             </div>
                           </div>
                         );
