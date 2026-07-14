@@ -1,8 +1,10 @@
+name: food-order-3tier
+
 services:
   db:
     image: postgres:15-alpine
     container_name: food_db
-    restart: always
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password123}
@@ -11,40 +13,53 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - food-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   web:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
     container_name: food_api
-    restart: always
-    working_dir: /app
-    volumes:
-      - ./backend:/app
+    restart: unless-stopped
     ports:
       - "8000:8000"
+    env_file: .env
     environment:
-      DATABASE_URL: postgresql://postgres:password123@db:5432/food_db
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password123}@db:5432/${POSTGRES_DB:-food_db}
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-here}
+      ALGORITHM: ${ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-11520}
     depends_on:
-      - db
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      db:
+        condition: service_healthy
+    networks:
+      - food-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile.dev
     container_name: food_ui
-    restart: always
-    working_dir: /app
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
+    restart: unless-stopped
     ports:
-      - "5173:5173"
-    environment:
-      VITE_API_BASE: http://localhost:8000/api/v1
+      - "8080:8080"
+    env_file: .env
     depends_on:
-      - web
+      web:
+        condition: service_healthy
+    networks:
+      - food-net
 
 volumes:
   postgres_data:
+
+networks:
+  food-net:
+    driver: bridge

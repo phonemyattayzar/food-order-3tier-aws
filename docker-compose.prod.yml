@@ -1,0 +1,6 @@
+services:
+  web:
+    image: food-api:${APP_VERSION:?APP_VERSION is required}
+
+  frontend:
+    image: food-ui:${APP_VERSION:?APP_VERSION is required}
