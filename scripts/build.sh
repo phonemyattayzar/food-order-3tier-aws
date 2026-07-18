@@ -18,11 +18,13 @@ printf '%s\n' "${VERSION}" > "${SCRIPT_DIR}/.release-version"
 printf 'Building version: %s\n' "${VERSION}"
 
 docker build \
+  --platform linux/amd64 \
   -t "food-api:${VERSION}" \
   -t "food-api:latest" \
   "${SCRIPT_DIR}/backend"
 
 docker build \
+  --platform linux/amd64 \
   -t "food-ui:${VERSION}" \
   -t "food-ui:latest" \
   "${SCRIPT_DIR}/frontend"

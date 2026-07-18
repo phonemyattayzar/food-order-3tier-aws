@@ -104,3 +104,10 @@ entity.txt
 MEMORY.md
 pair-senior.txt
 schema_design.md
+
+# =========================
+# Release & Build Artifacts
+# =========================
+*.tar.gz
+docker-images/
+.release-version
