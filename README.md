@@ -20,7 +20,8 @@ It is customized to support a **single-Availability Zone (Single-AZ)** setup wit
 10. [Backend Tier Deployment (FastAPI on EC2)](#10-backend-tier-deployment-fastapi-on-ec2)
 11. [Database Migrations (Alembic)](#11-database-migrations-alembic)
 12. [Automating with GitLab CI/CD](#12-automating-with-gitlab-cicd)
-13. [Testing and Troubleshooting](#13-testing-and-troubleshooting)
+13. [Auto Scaling Groups (ASG) Setup](#13-auto-scaling-groups-asg-setup)
+14. [Testing and Troubleshooting](#14-testing-and-troubleshooting)
 
 ---
 
@@ -596,9 +597,451 @@ deploy:backend:
 
 ---
 
-## 13. Testing and Troubleshooting
+## 13. Auto Scaling Groups (ASG) Setup
 
-### 13.1 Verification Steps
+Auto Scaling Groups (ASG) let AWS automatically launch and replace EC2 instances based on demand. Instead of manually SSHing into every new server, you define a **Launch Template** with your instance configuration and **User data** script so each instance bootstraps itself.
+
+This section covers **Frontend** and **Backend** ASGs. You will need two Launch Templates:
+
+| Launch Template | Purpose |
+| :--- | :--- |
+| `sarmel-frontend-lt` | Frontend React + Nginx instances |
+| `sarmel-backend-lt` | Backend FastAPI instances |
+
+> **Prerequisite:** Complete sections 3–8 (VPC, security groups, RDS, SSM, IAM, ALB, and target groups) before creating Launch Templates and ASGs. The ASG approach replaces the manual EC2 launch and target registration steps in sections 9.1, 9.3, 10.1, and 10.3.
+
+### 13.1 Create Launch Templates
+
+Go to **EC2** → **Launch Templates** → **Create launch template**.
+
+#### Frontend Launch Template (`sarmel-frontend-lt`)
+
+| Setting | Value |
+| :--- | :--- |
+| **Name** | `sarmel-frontend-lt` |
+| **AMI** | Amazon Linux 2023 |
+| **Instance type** | `t3.small` |
+| **Key pair** | Your existing key pair |
+| **Security group** | `sarmel-frontend-sg` |
+| **IAM instance profile** | `sarmel-ec2-role` |
+
+**User data (Advanced details):**
+
+Paste the following script into **User data** so every new frontend instance installs dependencies, clones the repo, builds the React app, and starts Nginx automatically:
+
+```bash
+#!/bin/bash
+
+set -e
+
+dnf update -y
+
+dnf install -y git nginx nodejs20
+
+alternatives --set node /usr/bin/node-20 || true
+
+cd /home/ec2-user
+
+if [ ! -d "app" ]; then
+    git clone https://gitlab.com/phonemyattayzarkyaw/sar-mel.git app
+fi
+
+cd /home/ec2-user/app/frontend
+
+npm install
+
+VITE_API_BASE="/api/v1" npm run build
+
+rm -rf /usr/share/nginx/html/*
+cp -r dist/* /usr/share/nginx/html/
+
+chown -R nginx:nginx /usr/share/nginx/html
+
+cat > /etc/nginx/conf.d/sarmel.conf <<'EOF'
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+}
+EOF
+
+systemctl enable nginx
+systemctl restart nginx
+```
+
+**Why User data?**
+
+When the ASG creates new instances (e.g. Frontend EC2 #1, #2, #3), each one automatically runs this setup. You no longer need to SSH in and provision every server by hand.
+
+Click **Create launch template**.
+
+#### Backend Launch Template (`sarmel-backend-lt`)
+
+| Setting | Value |
+| :--- | :--- |
+| **Name** | `sarmel-backend-lt` |
+| **AMI** | Amazon Linux 2023 |
+| **Instance type** | `t3.micro` |
+| **Key pair** | Your existing key pair |
+| **Security group** | `sarmel-backend-sg` |
+| **IAM instance profile** | `sarmel-ec2-role` |
+
+**User data (Advanced details):**
+
+Paste the following script into **User data** so every new backend instance installs dependencies, clones the repo, fetches SSM parameters, configures systemd, and starts the FastAPI service automatically:
+
+```bash
+#!/bin/bash
+
+set -e
+
+LOG_FILE="/var/log/sarmel-user-data.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "===== Sar Mel Backend User Data Started ====="
+
+# ============================================================
+# 1. Update packages and install dependencies
+# ============================================================
+
+dnf update -y
+
+dnf install -y \
+    python3.11 \
+    python3.11-pip \
+    python3.11-devel \
+    git \
+    postgresql15 \
+    awscli
+
+echo "Packages installed."
+
+
+# ============================================================
+# 2. Clone application
+# ============================================================
+
+cd /home/ec2-user
+
+if [ ! -d "/home/ec2-user/app" ]; then
+    git clone https://gitlab.com/phonemyattayzarkyaw/sar-mel.git app
+else
+    echo "Repository already exists."
+fi
+
+chown -R ec2-user:ec2-user /home/ec2-user/app
+
+cd /home/ec2-user/app/backend
+
+echo "Repository ready."
+
+
+# ============================================================
+# 3. Create Python virtual environment
+# ============================================================
+
+python3.11 -m venv /home/ec2-user/app/backend/venv
+
+source /home/ec2-user/app/backend/venv/bin/activate
+
+pip install --upgrade pip
+
+pip install -r /home/ec2-user/app/backend/requirements.txt
+
+echo "Python dependencies installed."
+
+
+# ============================================================
+# 4. Create SSM parameter fetching script
+# ============================================================
+
+cat > /home/ec2-user/app/backend/get-params.sh <<'EOF'
+#!/bin/bash
+
+set -e
+
+AWS_REGION="ap-southeast-1"
+
+echo "Fetching parameters from AWS SSM..."
+
+DB_URL=$(aws ssm get-parameter \
+  --name "/sarmel/production/DATABASE_URL" \
+  --with-decryption \
+  --region "$AWS_REGION" \
+  --query "Parameter.Value" \
+  --output text)
+
+DB_USER=$(aws ssm get-parameter \
+  --name "/sarmel/production/POSTGRES_USER" \
+  --region "$AWS_REGION" \
+  --query "Parameter.Value" \
+  --output text)
+
+DB_PASS=$(aws ssm get-parameter \
+  --name "/sarmel/production/POSTGRES_PASSWORD" \
+  --with-decryption \
+  --region "$AWS_REGION" \
+  --query "Parameter.Value" \
+  --output text)
+
+DB_NAME=$(aws ssm get-parameter \
+  --name "/sarmel/production/POSTGRES_DB" \
+  --region "$AWS_REGION" \
+  --query "Parameter.Value" \
+  --output text)
+
+SEC_KEY=$(aws ssm get-parameter \
+  --name "/sarmel/production/SECRET_KEY" \
+  --with-decryption \
+  --region "$AWS_REGION" \
+  --query "Parameter.Value" \
+  --output text)
+
+ALG=$(aws ssm get-parameter \
+  --name "/sarmel/production/ALGORITHM" \
+  --region "$AWS_REGION" \
+  --query "Parameter.Value" \
+  --output text)
+
+cat > /home/ec2-user/app/backend/.env <<ENV_EOF
+DATABASE_URL="$DB_URL"
+POSTGRES_USER="$DB_USER"
+POSTGRES_PASSWORD="$DB_PASS"
+POSTGRES_DB="$DB_NAME"
+SECRET_KEY="$SEC_KEY"
+ALGORITHM="$ALG"
+ENV_EOF
+
+chmod 600 /home/ec2-user/app/backend/.env
+
+chown ec2-user:ec2-user /home/ec2-user/app/backend/.env
+
+echo "SSM parameters loaded successfully."
+
+EOF
+
+chmod +x /home/ec2-user/app/backend/get-params.sh
+
+chown ec2-user:ec2-user /home/ec2-user/app/backend/get-params.sh
+
+
+# ============================================================
+# 5. Fetch environment variables from SSM
+# ============================================================
+
+/home/ec2-user/app/backend/get-params.sh
+
+
+# ============================================================
+# 6. Create systemd service
+# ============================================================
+
+cat > /etc/systemd/system/sarmel-backend.service <<'EOF'
+[Unit]
+Description=Sar Mel FastAPI Backend Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ec2-user
+
+WorkingDirectory=/home/ec2-user/app/backend
+
+EnvironmentFile=/home/ec2-user/app/backend/.env
+
+ExecStart=/home/ec2-user/app/backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+
+# ============================================================
+# 7. Start FastAPI backend
+# ============================================================
+
+systemctl daemon-reload
+
+systemctl enable sarmel-backend
+
+systemctl start sarmel-backend
+
+
+# ============================================================
+# 8. Verify service
+# ============================================================
+
+sleep 5
+
+systemctl status sarmel-backend --no-pager
+
+echo "===== Sar Mel Backend User Data Completed ====="
+```
+
+**Why User data?**
+
+When the ASG creates new instances (e.g. Backend EC2 #1, #2, #3), each one automatically runs this setup. Logs are written to `/var/log/sarmel-user-data.log` for troubleshooting.
+
+Click **Create launch template**.
+
+### 13.2 Create Frontend ASG
+
+Go to **EC2** → **Auto Scaling Groups** → **Create Auto Scaling group**.
+
+#### Basic settings
+
+| Setting | Value |
+| :--- | :--- |
+| **Name** | `sarmel-frontend-asg` |
+| **Launch template** | `sarmel-frontend-lt` |
+
+#### Network
+
+| Setting | Value |
+| :--- | :--- |
+| **VPC** | `sarmel-vpc` |
+| **Subnet** | `sarmel-public-subnet-1a` |
+
+Since your current design intentionally uses a single AZ for active EC2 instances, selecting one public subnet is acceptable.
+
+#### Group size (first test)
+
+| Setting | Value | Meaning |
+| :--- | :--- | :--- |
+| **Desired capacity** | `1` | Normal operation: 1 EC2 instance |
+| **Minimum capacity** | `1` | Never scale below 1 |
+| **Maximum capacity** | `2` | Scale up to 2 when triggered; never more than 2 |
+
+### 13.3 Attach Frontend Target Group
+
+During ASG creation, under **Load balancing**, choose:
+
+*   **Attach to an existing load balancer**
+*   Select **`sarmel-frontend-tg`**
+
+AWS then handles registration automatically:
+
+```
+ASG creates EC2
+       ↓
+EC2 automatically registered
+       ↓
+sarmel-frontend-tg
+       ↓
+ALB
+```
+
+You no longer need to manually register instances in the target group (see section 9.3).
+
+### 13.4 Configure Frontend Health Check
+
+For the frontend ASG, set:
+
+| Setting | Value | Reason |
+| :--- | :--- | :--- |
+| **Health check type** | `ELB` | Uses the ALB target group health check |
+| **Health check grace period** | `300` seconds | Allows time for User data to finish |
+
+The grace period is important because User data needs time to:
+
+```
+install Node
+       ↓
+clone Git
+       ↓
+npm install
+       ↓
+npm run build
+       ↓
+start Nginx
+```
+
+Without a sufficient grace period, the ASG may terminate instances while they are still installing.
+
+Click **Create Auto Scaling group**.
+
+### 13.5 Create Backend ASG
+
+Go to **EC2** → **Auto Scaling Groups** → **Create Auto Scaling group**.
+
+#### Basic settings
+
+| Setting | Value |
+| :--- | :--- |
+| **Name** | `sarmel-backend-asg` |
+| **Launch template** | `sarmel-backend-lt` |
+
+#### Network
+
+| Setting | Value |
+| :--- | :--- |
+| **VPC** | `sarmel-vpc` |
+| **Subnet** | `sarmel-public-subnet-1a` |
+
+#### Group size (first test)
+
+| Setting | Value | Meaning |
+| :--- | :--- | :--- |
+| **Desired capacity** | `1` | Normal operation: 1 EC2 instance |
+| **Minimum capacity** | `1` | Never scale below 1 |
+| **Maximum capacity** | `2` | Scale up to 2 when triggered; never more than 2 |
+
+### 13.6 Attach Backend Target Group
+
+During ASG creation, under **Load balancing**, choose:
+
+*   **Attach to an existing load balancer**
+*   Select **`sarmel-backend-tg`**
+
+AWS then handles registration automatically:
+
+```
+ASG creates EC2
+       ↓
+EC2 automatically registered
+       ↓
+sarmel-backend-tg
+       ↓
+ALB
+```
+
+You no longer need to manually register instances in the target group (see section 10.3).
+
+### 13.7 Configure Backend Health Check
+
+For the backend ASG, set:
+
+| Setting | Value | Reason |
+| :--- | :--- | :--- |
+| **Health check type** | `ELB` | Uses the ALB target group health check |
+| **Health check grace period** | `300` seconds | Allows time for User data to finish |
+
+The grace period gives your backend User data script time to install Python, clone the repo, fetch SSM parameters, and start the FastAPI service before the ASG marks the instance unhealthy.
+
+Click **Create Auto Scaling group**.
+
+---
+
+## 14. Testing and Troubleshooting
+
+### 14.1 Verification Steps
 1.  **Web Client Access:** In a browser, open `http://[ALB-DNS-NAME]/`. The user interface should load successfully.
 2.  **API Routing Check:** In a browser, open `http://[ALB-DNS-NAME]/api/v1/`. It should return:
     ```json
@@ -606,7 +1049,7 @@ deploy:backend:
     ```
 3.  **End-to-end Integration:** Complete a registration or add a category/restaurant in the UI to confirm the Frontend can query the Backend through the ALB, and that the Backend successfully stores data in RDS.
 
-### 13.2 Troubleshooting Commands
+### 14.2 Troubleshooting Commands
 
 *   **FastAPI Logs (on Backend Server):**
     ```bash
@@ -620,7 +1063,7 @@ deploy:backend:
     *   Check AWS Console → EC2 → Target Groups.
     *   Verify both targets show **Healthy**. If backend shows unhealthy, check that port `8000` is active and the security group allows incoming TCP 8000 from the ALB.
 
-### 13.3 Common Errors & How to Fix
+### 14.3 Common Errors & How to Fix
 
 #### 1. `502 Bad Gateway` when accessing ALB
 *   **Cause 1:** The target server's application service is not running (e.g. Nginx on frontend or Uvicorn on backend).
