@@ -17,6 +17,7 @@ This approach ensures zero-downtime cutovers, fail-safe environment variable val
 7. [Deployment Workflow (On Production Server)](#7-deployment-workflow-on-production-server)
 8. [Rollback Strategy](#8-rollback-strategy)
 9. [Day-to-Day Server Operations](#9-day-to-day-server-operations)
+10. [Troubleshooting & Common Deployment Errors](#10-troubleshooting--common-deployment-errors)
 
 ---
 
@@ -301,55 +302,178 @@ Do **not** delete a release directory with `rm -rf` while it is still a worktree
 
 ## 7. Deployment Workflow (On Production Server)
 
-### 1. Extract the Archive
+There are two deployment workflows supported on the production server:
+- **Method A (Recommended — Git Worktree)**: Uses Git worktrees to check out versioned release tags. Ideal when the server has SSH access to GitHub.
+- **Method B (Airgapped / Tarball Archive)**: Uses the pre-packaged `.tar.gz` bundle produced by `make release`. Ideal when the server has no direct internet or GitHub access.
+
+---
+
+### Method A: Git Worktree Workflow (Recommended)
+
+Follow these step-by-step instructions directly on your production server:
+
+#### Step 1: Connect to the Production Server
+Log in to your Ubuntu production server:
+```bash
+ssh ubuntu@<production-server-ip>
+```
+
+#### Step 2: Fetch and Create the Release Worktree
+Ensure your desired tag (e.g. `v1.1.0`) is pushed to GitHub. Then fetch the tag and create the worktree:
+```bash
+sudo bash /opt/src/food-order-3tier-aws/main/scripts/add-release-worktree.sh v1.1.0
+```
+Navigate into the newly created release worktree:
+```bash
+cd /opt/src/food-order-3tier-aws/v1.1.0
+ls -la
+```
+*You should see `docker-compose.yml`, `docker-compose.prod.yml`, `.env.template`, `Makefile`, and `scripts/`.*
+
+#### Step 3: Ensure Docker Images are Loaded or Built
+Depending on whether you built images locally or on the server:
+- **Option 1 (Pre-built image tarballs)**: If you transferred tarballs to `docker-images/`:
+  ```bash
+  # Check tarball existence
+  ls -lh docker-images/
+  # Load manually (or let deploy.sh --load-images do it):
+  docker load -i docker-images/food-api-v1.1.0.tar.gz
+  docker load -i docker-images/food-ui-v1.1.0.tar.gz
+  ```
+- **Option 2 (Build on server)**: If building directly on this machine:
+  ```bash
+  make build
+  ```
+
+#### Step 4: Configure Production Secrets (`shared/.env`)
+All production secrets are stored persistently in `/opt/food-order-3tier-aws/shared/.env`. This file is **never overwritten** by future deployments.
+
+1. Create the shared directory if it does not exist:
+   ```bash
+   sudo mkdir -p /opt/food-order-3tier-aws/shared
+   ```
+
+2. If `/opt/food-order-3tier-aws/shared/.env` does not exist, copy the template:
+   ```bash
+   sudo cp .env.template /opt/food-order-3tier-aws/shared/.env
+   sudo chmod 600 /opt/food-order-3tier-aws/shared/.env
+   ```
+
+3. Edit the file with your production credentials:
+   ```bash
+   sudo nano /opt/food-order-3tier-aws/shared/.env
+   ```
+   **Required Variables:**
+   ```ini
+   POSTGRES_USER=postgres
+   POSTGRES_PASSWORD=your_secure_db_password
+   POSTGRES_DB=food_db
+   SECRET_KEY=your_64_character_hex_secret_key
+   ALGORITHM=HS256
+   ACCESS_TOKEN_EXPIRE_MINUTES=11520
+   ```
+   > [!TIP]
+   > Generate a secure `SECRET_KEY` using:
+   > ```bash
+   > openssl rand -hex 32
+   > ```
+
+4. **Verify your environment variables**:
+   Run this command to verify that all 6 required keys are defined without exposing secret values:
+   ```bash
+   sudo awk -F= '/^[A-Z_][A-Z0-9_]*=/{print $1}' /opt/food-order-3tier-aws/shared/.env | sort
+   ```
+   Output must contain:
+   ```
+   ACCESS_TOKEN_EXPIRE_MINUTES
+   ALGORITHM
+   POSTGRES_DB
+   POSTGRES_PASSWORD
+   POSTGRES_USER
+   SECRET_KEY
+   ```
+
+#### Step 5: Execute the Deployment Script
+Run the automated deployment script from your release worktree:
+```bash
+sudo bash scripts/deploy.sh --version=v1.1.0
+```
+*(Add `--load-images` if you have tarballs in `docker-images/` that you want the script to load automatically).*
+
+The deployment script executes seven automated stages:
+| Stage | Description |
+|-------|-------------|
+| `[1/7] Loading Docker images` | Loads `food-api` & `food-ui` tarballs (if `--load-images` is specified). |
+| `[2/7] Service user` | Ensures the dedicated service user `food-order-3tier` exists and has `docker` group membership. |
+| `[3/7] Release directory` | Creates `/opt/food-order-3tier-aws/releases/v1.1.0/` and syncs Compose files, `.env.template`, and scripts. |
+| `[4/7] Shared directory + .env` | Combines persistent secrets from `shared/.env` with `APP_VERSION=v1.1.0` into `releases/v1.1.0/.env`. |
+| `[5/7] env-check` | Compares `.env.template` against `shared/.env` to guarantee no required secrets are missing, and verifies all values are non-empty. |
+| `[6/7] Ownership + atomic cutover` | Updates file ownership to `food-order-3tier:food-order-3tier`, flips `/opt/food-order-3tier-aws/current -> releases/v1.1.0`, and creates/reloads the systemd service. |
+| `[7/7] Start & Prune` | Starts (or restarts) `food-order-3tier.service`, confirms container health, and prunes older releases (keeps the 3 latest). |
+
+#### Step 6: Apply Database Migrations
+On the initial deployment or whenever new database migrations are introduced, run Alembic migrations inside the backend container:
+```bash
+cd /opt/food-order-3tier-aws/current
+docker compose -f docker-compose.yml -f docker-compose.prod.yml exec web alembic upgrade head
+```
+
+#### Step 7: Verify the Deployment
+Verify the service, containers, and HTTP endpoints:
+```bash
+# 1. Check systemd unit status
+sudo systemctl status food-order-3tier
+
+# 2. Check running Docker containers and health checks
+docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
+
+# 3. Test Backend API health endpoint
+curl -s http://localhost:8000/api/v1
+# Expected output: {"message":"Mingalaba! Food API is running"}
+
+# 4. Test Frontend HTTP endpoint
+curl -I http://localhost:8080/
+# Expected output: HTTP/1.1 200 OK
+```
+
+---
+
+### Method B: Airgapped / Tarball Archive Workflow
+
+If deploying to an airgapped production server without Git or internet access:
+
+#### Step 1: Copy Archive to Server
+On your build machine, transfer the archive created by `make release`:
+```bash
+scp food-order-3tier-v1.1.0.tar.gz ubuntu@<production-server-ip>:/tmp/
+```
+
+#### Step 2: Extract the Package
+On the production server:
 ```bash
 cd /tmp
 tar -xzf food-order-3tier-v1.1.0.tar.gz
 cd food-order-3tier-v1.1.0
 ```
 
-### 2. Run the Initial Deploy (Fails intentionally to prompt env set)
+#### Step 3: Configure Shared Secrets
+Configure `/opt/food-order-3tier-aws/shared/.env` as detailed in Method A Step 4:
 ```bash
-sudo bash scripts/deploy.sh --load-images --version=v1.1.0
-```
-On the first execution, this script creates the shared credentials file `/opt/food-order-3tier-aws/shared/.env` and exits.
-
-### 3. Configure the Production Credentials
-```bash
-sudo nano /opt/food-order-3tier-aws/shared/.env
-```
-Fill in the database username, password, and security keys:
-```ini
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=your_secure_db_password
-POSTGRES_DB=food_db
-SECRET_KEY=your_64_character_hex_secret_key
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=11520
+sudo mkdir -p /opt/food-order-3tier-aws/shared
+if [ ! -f /opt/food-order-3tier-aws/shared/.env ]; then
+  sudo cp .env.template /opt/food-order-3tier-aws/shared/.env
+  sudo chmod 600 /opt/food-order-3tier-aws/shared/.env
+  sudo nano /opt/food-order-3tier-aws/shared/.env
+fi
 ```
 
-### 4. Resume Deployment
-Re-run the deployment script:
+#### Step 4: Run Deployment
 ```bash
 sudo bash scripts/deploy.sh --load-images --version=v1.1.0
 ```
 
-The script will:
-1. Load the Docker image tarballs using `docker load`.
-2. Compare the variables in `shared/.env` with `.env.template` to detect any missing keys.
-3. Set up `/opt/food-order-3tier-aws/releases/v1.1.0/` and copy configurations.
-4. Atomically point the `current` symlink to `/opt/food-order-3tier-aws/releases/v1.1.0`.
-5. Install and enable the `food-order-3tier` systemd service.
-6. Start/restart the containers.
-
-### 5. Verify the Deployment
-```bash
-sudo systemctl status food-order-3tier
-
-# Verify endpoints
-curl -s http://localhost:8000/api/v1
-curl -s http://localhost:8080/
-```
+#### Step 5: Run Migrations and Verify
+Execute Step 6 and Step 7 from Method A to apply database migrations and verify the services.
 
 ---
 
@@ -393,3 +517,54 @@ cd /opt/food-order-3tier-aws/current
 | List git worktrees | `git -C /opt/src/food-order-3tier-aws worktree list` |
 
 > ⚠️ **Caution**: Never run `docker compose down -v`. The `-v` flag will destroy the named Docker volume `postgres_data`, resulting in permanent database loss. Use `docker compose down` instead.
+
+---
+
+## 10. Troubleshooting & Common Deployment Errors
+
+### 1. `rsync: link_stat ".../.env.template" failed: No such file or directory`
+- **Cause**: Step `[3/7]` requires `.env.template` to copy into the release directory and validate production variables. If this file was missing from older Git commits (historically masked by a `.gitignore` rule ignoring `.env.*`), the deployment stops here.
+- **Fix**: Ensure `!.env.template` is whitelisted in `.gitignore` and committed. On an existing server worktree, you can immediately create it with placeholder keys:
+  ```bash
+  cat << 'EOF' > .env.template
+  POSTGRES_USER=postgres
+  POSTGRES_PASSWORD=your_secure_db_password
+  POSTGRES_DB=food_db
+  SECRET_KEY=your_64_character_hex_secret_key
+  ALGORITHM=HS256
+  ACCESS_TOKEN_EXPIRE_MINUTES=11520
+  EOF
+  ```
+
+### 2. `ERROR: variables required by <version> but missing from shared/.env`
+- **Cause**: Step `[5/7]` compares the variable keys found in `.env.template` against `/opt/food-order-3tier-aws/shared/.env`. One or more required keys are missing or blank.
+- **Fix**: Inspect the missing keys with:
+  ```bash
+  comm -23 \
+    <(grep -E '^[A-Z_][A-Z0-9_]*=' .env.template | cut -d= -f1 | sort) \
+    <(sudo grep -E '^[A-Z_][A-Z0-9_]*=' /opt/food-order-3tier-aws/shared/.env | cut -d= -f1 | sort)
+  ```
+  Edit `/opt/food-order-3tier-aws/shared/.env` and add the missing keys with valid production values, then re-run `deploy.sh`.
+
+### 3. `fatal: detected dubious ownership in repository`
+- **Cause**: The repository is owned by user `ubuntu`, but `git` commands are being executed under `sudo` (as `root`).
+- **Fix**: Register system-wide safe directory exceptions in `/etc/gitconfig`:
+  ```bash
+  sudo git config --system --add safe.directory /opt/src/food-order-3tier-aws
+  sudo git config --system --add safe.directory /opt/src/food-order-3tier-aws/.bare
+  ```
+
+### 4. `Permission denied (publickey)` when fetching Git tags
+- **Cause**: The service user `food-order-3tier` or `root` does not possess your GitHub SSH key.
+- **Fix**: Use `scripts/add-release-worktree.sh`, which automatically passes the operator's SSH key via `GIT_SSH_COMMAND`. Never run `sudo -u food-order-3tier git fetch`.
+
+### 5. Backend Container Fails Health Check (`unhealthy`)
+- **Cause**: Database is still starting, credentials in `shared/.env` don't match PostgreSQL, or migrations have not been applied.
+- **Fix**: Inspect the application logs and container status:
+  ```bash
+  docker logs food_api --tail 100
+  docker logs food_db --tail 100
+  cd /opt/food-order-3tier-aws/current
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml exec web alembic upgrade head
+  ```
+
