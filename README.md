@@ -49,7 +49,7 @@ Two directories work together: a **git worktree tree** (source) and a **runtime 
 
 Each version folder in `releases/` contains what is required to orchestrate the containers (Compose files, scripts, env). The application code and runtime dependencies live inside the Docker images.
 
-This is the same pattern as a typical production layout (`current` symlink + `releases/<version>` + `shared/.env`), with git worktrees used to check out each tagged version without recloning.
+This is the same pattern as a typical production layout (`current` symlink + `releases/<version>` + `shared/.env`). Git worktrees live under `/opt/src/food-order-3tier-aws/` (`main`, `v1.1.0`, …). `deploy.sh` copies Compose files into `/opt/food-order-3tier-aws/releases/<version>/` and flips `current`.
 
 ### Compose Configuration Roles
 
@@ -133,12 +133,21 @@ This creates `/opt/src/food-order-3tier-aws/` using a git worktree model:
 | `/opt/src/food-order-3tier-aws/.git` | Pointer file: `gitdir: ./.bare` |
 | `/opt/src/food-order-3tier-aws/main` | Worktree for the `main` branch |
 
-The script also ensures the `food-order-3tier` service user exists. After it finishes you should see:
+Ownership is split on purpose:
+
+| Path | Owner | Why |
+|------|------|-----|
+| `/opt/src/food-order-3tier-aws/` | `$SUDO_USER` (usually `ubuntu`) | This user has the GitHub SSH key and must be able to `git fetch` and add worktrees |
+| `/opt/food-order-3tier-aws/` | `food-order-3tier` | Runtime tree (`releases/`, `shared/.env`, `current`) |
+
+The script also writes **system** `safe.directory` entries so `sudo git` does not fail with `detected dubious ownership`. After it finishes you should see:
 
 ```
 Server git setup complete.
-  Bare repo : /opt/src/food-order-3tier-aws/.bare
-  Worktree  : /opt/src/food-order-3tier-aws/main
+  Bare repo     : /opt/src/food-order-3tier-aws/.bare
+  Worktree      : /opt/src/food-order-3tier-aws/main
+  Git owner     : ubuntu  (has GitHub SSH key; run fetch as this user)
+  Runtime owner : food-order-3tier (/opt/food-order-3tier-aws)
 ```
 
 ---
@@ -147,129 +156,131 @@ Server git setup complete.
 
 Use git worktrees so each tagged release is a separate checkout. You never clone the repo again; you fetch tags, then add a worktree for that version.
 
-Work from the git root (the directory that contains the `.git` pointer):
+### Why `ubuntu` and `food-order-3tier` cannot each do the whole job
+
+| User | GitHub SSH key | Can write `.bare` | Result |
+|------|----------------|-------------------|--------|
+| `ubuntu` | Yes | Only if it owns `/opt/src/...` | Fetch works; worktree add works |
+| `food-order-3tier` | No | Yes (on older setups) | `Permission denied (publickey)` on fetch, so the tag never arrives |
+| `root` via `sudo git` | Only if `/root/.ssh/id_ed25519` exists | Yes | Also needs **system** `safe.directory` (root's gitconfig, not ubuntu's) |
+
+Do **not** run:
+
+```bash
+sudo -u food-order-3tier git fetch --tags
+sudo -u food-order-3tier git worktree add v1.1.0 v1.1.0
+```
+
+That user has no GitHub key, so the tag is never fetched and worktree add fails with `fatal: invalid reference: v1.1.0`.
+
+`git config --global --add safe.directory ...` as `ubuntu` does **not** fix `sudo git`, because sudo uses `/root/.gitconfig`. The scripts write **system** config instead (`/etc/gitconfig`).
+
+### 6.1 Add a tagged release (recommended)
+
+The tag must already exist on GitHub (see [section 4](#4-build-workflow-on-developerbuild-machine)). Then on the server:
+
+```bash
+sudo bash scripts/add-release-worktree.sh v1.1.0
+```
+
+The script:
+
+1. Marks `/opt/src/food-order-3tier-aws` and `.bare` as `safe.directory` for root.
+2. Uses the operator's (or root's) SSH key via `GIT_SSH_COMMAND`.
+3. Fetches **branches and tags** into the bare repo (`refs/heads/*` and `refs/tags/*`).
+4. Fails with `git tag -l` and `git ls-remote --tags origin` if `v1.1.0` still does not exist.
+5. Adds `/opt/src/food-order-3tier-aws/v1.1.0`.
+6. `chown`s the git tree back to `ubuntu` (not `food-order-3tier`).
+
+Then:
+
+```bash
+ls -la /opt/src/food-order-3tier-aws
+# .bare/  .git  main/  v1.1.0/
+cd /opt/src/food-order-3tier-aws/v1.1.0
+```
+
+### 6.2 Existing servers (already chowned to `food-order-3tier`)
+
+If an older `setup-server.sh` already ran `chown -R food-order-3tier` on the git tree, fix ownership once, then use the helper:
+
+```bash
+sudo chown -R ubuntu:ubuntu /opt/src/food-order-3tier-aws
+sudo git config --system --add safe.directory /opt/src/food-order-3tier-aws
+sudo git config --system --add safe.directory /opt/src/food-order-3tier-aws/.bare
+sudo bash scripts/add-release-worktree.sh v1.1.0
+```
+
+Leave `/opt/food-order-3tier-aws/` owned by `food-order-3tier`.
+
+### 6.3 Inspect worktrees and update `main`
+
+Work from the git root:
 
 ```bash
 cd /opt/src/food-order-3tier-aws
-```
-
-### 6.1 Inspect the current worktrees
-
-```bash
 git worktree list
 git -C main status
+git -C main pull
+git log --oneline -n 10
 ```
 
-Expected first-time output of `git worktree list`:
+Expected first-time `git worktree list`:
 
 ```
 /opt/src/food-order-3tier-aws/.bare  (bare)
 /opt/src/food-order-3tier-aws/main   <commit>  [main]
 ```
 
-### 6.2 Fetch and update `main`
+After adding `v1.1.0`:
 
-Always refresh `main` before cutting a new release worktree:
+```
+/opt/src/food-order-3tier-aws/.bare     (bare)
+/opt/src/food-order-3tier-aws/main      <commit>  [main]
+/opt/src/food-order-3tier-aws/v1.1.0    <commit>  (detached at v1.1.0)
+```
+
+### 6.4 If `invalid reference: v1.1.0` still happens
+
+Fetch succeeded but the tag is not in this bare repo. Check local vs remote:
 
 ```bash
-git fetch
-git -C main status
-git -C main pull
-git log --oneline -n 10
+sudo git -C /opt/src/food-order-3tier-aws/.bare tag -l
+sudo git -C /opt/src/food-order-3tier-aws/.bare ls-remote --tags origin
 ```
 
-Equivalent if you prefer to `cd` into the worktree:
+- Remote has `refs/tags/v1.1.0` but local does not → run `sudo bash scripts/add-release-worktree.sh v1.1.0` again (it fetches tags explicitly).
+- Remote has a **different** name (`v1.1`, `v1.0.0`) → use that tag, or push `v1.1.0` from the build machine.
+- Remote has nothing → tag was never pushed:
 
 ```bash
-cd /opt/src/food-order-3tier-aws
-git fetch
-cd main
-git status
-git pull
-git log --oneline
-cd ..
-git worktree list
+git tag -a v1.1.0 -m "Release v1.1.0"
+git push origin v1.1.0
 ```
 
-### 6.3 Add a worktree for a tagged release
-
-Tags must exist on the remote (see [section 4](#4-build-workflow-on-developerbuild-machine)). After `git fetch`, add a worktree named after the tag:
+### 6.5 Build and compare env from the release worktree
 
 ```bash
-cd /opt/src/food-order-3tier-aws
-git fetch --tags
-git worktree add v1.1.0 v1.1.0
-cd v1.1.0
-```
-
-That creates `/opt/src/food-order-3tier-aws/v1.1.0` checked out at tag `v1.1.0`. You can also place release worktrees under the runtime `releases/` directory (same idea as `/opt/ftth-dashboard/releases/v1.7.0`):
-
-```bash
-cd /opt/src/food-order-3tier-aws
-sudo mkdir -p /opt/food-order-3tier-aws/releases
-git worktree add /opt/food-order-3tier-aws/releases/v1.1.0 v1.1.0
-cd /opt/food-order-3tier-aws/releases/v1.1.0
-```
-
-After this, `git worktree list` looks like:
-
-```
-/opt/src/food-order-3tier-aws/.bare                   (bare)
-/opt/src/food-order-3tier-aws/main                    <commit>  [main]
-/opt/food-order-3tier-aws/releases/v1.1.0             <commit>  [v1.1.0]
-```
-
-And the runtime tree looks like:
-
-```
-/opt/food-order-3tier-aws/
-  current -> /opt/food-order-3tier-aws/releases/v1.1.0
-  releases/
-    v1.1.0/
-  shared/
-    .env
-```
-
-`current` is a symlink. systemd uses it as `WorkingDirectory`, so flipping `current` is the cutover (see [section 8](#8-rollback-strategy)).
-
-### 6.4 Build from the release worktree
-
-From the version checkout:
-
-```bash
-cd /opt/food-order-3tier-aws/releases/v1.1.0
-# or: cd /opt/src/food-order-3tier-aws/v1.1.0
-
+cd /opt/src/food-order-3tier-aws/v1.1.0
 make
 make build
 ls -al
-```
-
-`make build` runs `scripts/build.sh` and produces versioned Docker images from this tag.
-
-### 6.5 Compare env template with production secrets
-
-`shared/.env` is never overwritten by a deploy. Diff it against the release template so you add any new keys before cutover:
-
-```bash
 diff .env.template /opt/food-order-3tier-aws/shared/.env
-
-# if files are owned by the service user:
-sudo -u food-order-3tier diff .env.template /opt/food-order-3tier-aws/shared/.env
 ```
 
-If the template has new variables, edit `/opt/food-order-3tier-aws/shared/.env`, then continue with [section 7](#7-deployment-workflow-on-production-server).
+`shared/.env` is never overwritten by a deploy. If the template has new keys, edit `/opt/food-order-3tier-aws/shared/.env`, then continue with [section 7](#7-deployment-workflow-on-production-server).
+
+`current` under `/opt/food-order-3tier-aws/` is the runtime symlink systemd uses as `WorkingDirectory`. Flipping it is the cutover (see [section 8](#8-rollback-strategy)).
 
 ### 6.6 Useful worktree commands
 
 | Task | Command |
 |------|---------|
-| List worktrees | `git worktree list` |
-| Fetch branches and tags | `git fetch --tags` |
-| Update `main` | `git -C main pull` |
-| Add a tagged release | `git worktree add /opt/food-order-3tier-aws/releases/v1.1.0 v1.1.0` |
-| Remove an old worktree | `git worktree remove /opt/food-order-3tier-aws/releases/v1.0.0` |
-| Prune stale worktree metadata | `git worktree prune` |
+| Add a tagged release | `sudo bash scripts/add-release-worktree.sh v1.1.0` |
+| List worktrees | `git -C /opt/src/food-order-3tier-aws worktree list` |
+| Update `main` | `git -C /opt/src/food-order-3tier-aws/main pull` |
+| Remove an old worktree | `git -C /opt/src/food-order-3tier-aws worktree remove v1.0.0` |
+| Prune stale worktree metadata | `git -C /opt/src/food-order-3tier-aws worktree prune` |
 
 Do **not** delete a release directory with `rm -rf` while it is still a worktree. Use `git worktree remove` so git metadata stays consistent.
 
