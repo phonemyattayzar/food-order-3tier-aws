@@ -1,32 +1,37 @@
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 
-.PHONY: help dev build release clean
+# Determine VERSION from git tag or short commit hash, default to 'dev'
+VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "dev")
 
-help:
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-15s %s\n", $$1, $$2}'
+.PHONY: help dev build build-api build-ui test clean
 
-dev: ## Run local development setup with docker compose (auto-reload)
+help: ## Show available commands
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+
+dev: ## Run local development environment (with hot reload)
 	docker compose up --build
 
-build: ## Build versioned Docker images (VERSION auto-detected from git)
-	bash scripts/build.sh
+build: build-api build-ui ## Build all Docker images (VERSION=...)
+	@printf "\nSuccessfully built images for version: %s\n" "$(VERSION)"
+	@docker images --filter "reference=food-api:$(VERSION)" --filter "reference=food-ui:$(VERSION)" --format "  {{.Repository}}:{{.Tag}} ({{.Size}})"
 
-release: ## Build images and create a deployable tar.gz archive
-	bash scripts/build.sh
-	@set -euo pipefail; \
-	VERSION=$$(cat .release-version); \
-	STAGING="food-order-3tier-$${VERSION}"; \
-	rm -rf "$${STAGING}"; \
-	mkdir -p "$${STAGING}/docker-images"; \
-	cp docker-compose.yml docker-compose.prod.yml .env.template "$${STAGING}/"; \
-	cp -r scripts "$${STAGING}/"; \
-	cp "docker-images/food-api-$${VERSION}.tar.gz" \
-	   "docker-images/food-ui-$${VERSION}.tar.gz" \
-	   "$${STAGING}/docker-images/"; \
-	tar -czf "food-order-3tier-$${VERSION}.tar.gz" "$${STAGING}"; \
-	rm -rf "$${STAGING}"; \
-	printf 'Archive: food-order-3tier-%s.tar.gz\n' "$${VERSION}"
+build-api: ## Build backend API Docker image
+	@printf "Building food-api:%s...\n" "$(VERSION)"
+	docker build \
+	  -t "food-api:$(VERSION)" \
+	  -t "food-api:latest" \
+	  ./backend
 
-clean: ## Remove build artefacts and release packages
-	rm -rf docker-images/ .release-version food-order-3tier-*/ food-order-3tier-*.tar.gz
+build-ui: ## Build frontend UI Docker image
+	@printf "Building food-ui:%s...\n" "$(VERSION)"
+	docker build \
+	  -t "food-ui:$(VERSION)" \
+	  -t "food-ui:latest" \
+	  ./frontend
+
+test: ## Run test suite / code validation
+	python3 -m compileall ./backend/app
+
+clean: ## Remove dangling docker build images and cache
+	docker image prune -f

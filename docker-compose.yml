@@ -17,17 +17,19 @@ services:
       - food-net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 3
-      start_period: 10s
+      retries: 5
+      start_period: 5s
 
   web:
+    image: food-api:${VERSION:-latest}
     container_name: food_api
     restart: unless-stopped
     ports:
       - "8000:8000"
-    env_file: .env
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password123}@db:5432/${POSTGRES_DB:-food_db}
       SECRET_KEY: ${SECRET_KEY:-your-secret-key-here}
@@ -40,22 +42,30 @@ services:
       - food-net
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1')"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 3
-      start_period: 15s
+      retries: 5
+      start_period: 10s
 
   frontend:
+    image: food-ui:${VERSION:-latest}
     container_name: food_ui
     restart: unless-stopped
     ports:
       - "8080:8080"
-    env_file: .env
+    env_file:
+      - .env
     depends_on:
       web:
         condition: service_healthy
     networks:
       - food-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
 volumes:
   postgres_data:
