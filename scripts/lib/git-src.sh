@@ -58,11 +58,11 @@ git_export_ssh() {
 }
 
 # git_configure_bare_fetch
-#   Bare repos must map origin heads to refs/heads/* (not refs/remotes/origin/*)
-#   so worktrees can check out main and tags.
+#   Map remote heads to refs/remotes/origin/* so fetch never conflicts with
+#   locally checked-out worktrees (e.g. main). Tags map directly to refs/tags/*.
 git_configure_bare_fetch() {
   git -C "${BARE_DIR}" config --unset-all remote.origin.fetch 2>/dev/null || true
-  git -C "${BARE_DIR}" config --add remote.origin.fetch "+refs/heads/*:refs/heads/*"
+  git -C "${BARE_DIR}" config --add remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
   git -C "${BARE_DIR}" config --add remote.origin.fetch "+refs/tags/*:refs/tags/*"
 }
 
