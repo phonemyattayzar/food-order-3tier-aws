@@ -351,11 +351,11 @@ The deployment script executes seven automated stages:
 | `[7/7] Start & Prune` | Starts (or restarts) `food-order-3tier.service`, confirms container health, and prunes older releases (keeps the 3 latest). |
 
 #### Step 6: Apply Database Migrations
-On the initial deployment or whenever new database migrations are introduced, run Alembic migrations inside the backend container:
+On the initial deployment or whenever new database migrations are introduced, run Alembic migrations directly inside the running backend container:
 ```bash
-cd /opt/food-order-3tier-aws/current
-docker compose -f docker-compose.yml -f docker-compose.prod.yml exec web alembic upgrade head
+sudo docker exec -it food_api alembic upgrade head
 ```
+*(Alternatively, from the runtime directory: `cd /opt/food-order-3tier-aws/current && sudo docker compose -f docker-compose.yml -f docker-compose.prod.yml exec web alembic upgrade head`).*
 
 #### Step 7: Verify the Deployment
 Verify the service, containers, and HTTP endpoints:

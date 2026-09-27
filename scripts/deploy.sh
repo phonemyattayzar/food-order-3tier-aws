@@ -183,6 +183,7 @@ check_required_env "${SHARED_DIR}/.env"
 
 printf '[6/7] Setting ownership and cutting over...\n'
 chown -R food-order-3tier:food-order-3tier "${PROJECT_DIR}"
+chmod 755 "${PROJECT_DIR}" "${PROJECT_DIR}/releases" "${PROJECT_DIR}/shared" "${RELEASE_DIR}"
 ln -sfn "${PROJECT_DIR}/releases/${VERSION}" "${PROJECT_DIR}/current"
 printf '  current → releases/%s\n' "${VERSION}"
 

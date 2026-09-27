@@ -75,6 +75,7 @@ if ! id food-order-3tier &>/dev/null; then
 fi
 mkdir -p "${RUNTIME_DIR}/releases" "${RUNTIME_DIR}/shared"
 chown -R food-order-3tier:food-order-3tier "${RUNTIME_DIR}" || true
+chmod 755 "${RUNTIME_DIR}" "${RUNTIME_DIR}/releases" "${RUNTIME_DIR}/shared" || true
 
 # ─── [7/7] Git tree owned by the operator with the GitHub key ────────────────
 
