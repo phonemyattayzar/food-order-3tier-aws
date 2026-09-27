@@ -2,7 +2,7 @@
 
 This branch implements a **versioned release directory layout with atomic symlink cutovers** for the **Sar Mel (Food Ordering System)**. It utilizes containerized services managed by Docker Compose and controlled via a host `systemd` service.
 
-This approach ensures zero-downtime cutovers, fail-safe environment variable validation, and instant rollback capabilities. It is optimized for single-server production deployments and works perfectly in airgapped environments (with no external internet access).
+This approach ensures zero-downtime cutovers, fail-safe environment variable validation, and instant rollback capabilities. All builds and deployments are performed directly on the production server.
 
 ---
 
@@ -11,13 +11,12 @@ This approach ensures zero-downtime cutovers, fail-safe environment variable val
 1. [Architecture & Server Layout](#1-architecture--server-layout)
 2. [Prerequisites](#2-prerequisites)
 3. [Local Development](#3-local-development)
-4. [Build Workflow (On Developer/Build Machine)](#4-build-workflow-on-developerbuild-machine)
-5. [First-Time Server Provisioning](#5-first-time-server-provisioning)
-6. [Git Worktree Setup (On Production Server)](#6-git-worktree-setup-on-production-server)
-7. [Deployment Workflow (On Production Server)](#7-deployment-workflow-on-production-server)
-8. [Rollback Strategy](#8-rollback-strategy)
-9. [Day-to-Day Server Operations](#9-day-to-day-server-operations)
-10. [Troubleshooting & Common Deployment Errors](#10-troubleshooting--common-deployment-errors)
+4. [First-Time Server Provisioning](#4-first-time-server-provisioning)
+5. [Git Worktree Setup (On Production Server)](#5-git-worktree-setup-on-production-server)
+6. [Build & Deployment Workflow (On Production Server)](#6-build--deployment-workflow-on-production-server)
+7. [Rollback Strategy](#7-rollback-strategy)
+8. [Day-to-Day Server Operations](#8-day-to-day-server-operations)
+9. [Troubleshooting & Common Deployment Errors](#9-troubleshooting--common-deployment-errors)
 
 ---
 
@@ -66,12 +65,11 @@ We divide the Docker Compose configuration into three roles:
 
 ## 2. Prerequisites
 
-- **Build Machine**: Docker installed (to build images and compile resources).
 - **Target Production Server**:
   - Ubuntu 24.04 LTS (or compatible Debian/Ubuntu system).
-  - Docker CE installed and running.
+  - Docker CE and Docker Compose plugin installed and running.
   - `rsync` and `git` installed.
-  - SSH key configured to pull from your git repository (for server setup).
+  - SSH key configured to access the GitHub repository (to clone and fetch release tags).
 
 ---
 
@@ -90,48 +88,7 @@ This merges `docker-compose.yml` and `docker-compose.override.yml` automatically
 
 ---
 
-## 4. Build Workflow (On Developer/Build Machine)
-
-This phase creates a fully self-contained release package, including the compiled docker images, ready to be transferred to an airgapped or secure production environment.
-
-### 1. Tag the Release
-```bash
-git tag -a v1.1.0 -m "Release v1.1.0"
-git push origin v1.1.0
-```
-
-GitHub rejects HTTPS username/password. If `git remote -v` shows `https://github.com/...`, switch the remote to SSH (the same key used to clone `/opt/src/...`):
-
-```bash
-git remote -v
-git tag -l 'v1.1.0'          # local tag already exists → do not create it again
-git ls-remote --tags origin  # see if GitHub already has it
-
-git remote set-url origin git@github.com:phonemyattayzar/food-order-3tier-aws.git
-git push origin v1.1.0
-```
-
-If `ls-remote` already shows `refs/tags/v1.1.0`, skip the push and fetch that tag on the server instead.
-
-### 2. Build and Package
-```bash
-make release
-```
-
-This triggers the `scripts/build.sh` script, which:
-1. Detects the version tag from Git.
-2. Builds the `food-api:v1.1.0` and `food-ui:v1.1.0` images.
-3. Saves these images as compressed tarballs under `docker-images/`.
-4. Packages everything into a deployable archive: `food-order-3tier-v1.1.0.tar.gz`.
-
-### 3. Transfer Archive to the Server
-```bash
-scp food-order-3tier-v1.1.0.tar.gz user@production-server:/tmp/
-```
-
----
-
-## 5. First-Time Server Provisioning
+## 4. First-Time Server Provisioning
 
 Run this once on a newly provisioned server. It creates the bare clone and the `main` worktree:
 
@@ -166,7 +123,7 @@ Server git setup complete.
 
 ---
 
-## 6. Git Worktree Setup (On Production Server)
+## 5. Git Worktree Setup (On Production Server)
 
 Use git worktrees so each tagged release is a separate checkout. You never clone the repo again; you fetch tags, then add a worktree for that version.
 
@@ -189,9 +146,15 @@ That user has no GitHub key, so the tag is never fetched and worktree add fails 
 
 `git config --global --add safe.directory ...` as `ubuntu` does **not** fix `sudo git`, because sudo uses `/root/.gitconfig`. The scripts write **system** config instead (`/etc/gitconfig`).
 
-### 6.1 Add a tagged release (recommended)
+### 5.1 Add a tagged release (recommended)
 
-The tag must already exist on GitHub (see [section 4](#4-build-workflow-on-developerbuild-machine)). Then on the server:
+Ensure the tag is pushed to GitHub:
+```bash
+git tag -a v1.1.0 -m "Release v1.1.0"
+git push origin v1.1.0
+```
+
+Then on the server:
 
 ```bash
 sudo bash scripts/add-release-worktree.sh v1.1.0
@@ -201,7 +164,7 @@ The script:
 
 1. Marks `/opt/src/food-order-3tier-aws` and `.bare` as `safe.directory` for root.
 2. Uses the operator's (or root's) SSH key via `GIT_SSH_COMMAND`.
-3. Fetches **branches and tags** into the bare repo (`refs/heads/*` and `refs/tags/*`).
+3. Fetches **branches and tags** into the bare repo (`refs/remotes/origin/*` and `refs/tags/*`).
 4. Fails with `git tag -l` and `git ls-remote --tags origin` if `v1.1.0` still does not exist.
 5. Adds `/opt/src/food-order-3tier-aws/v1.1.0`.
 6. `chown`s the git tree back to `ubuntu` (not `food-order-3tier`).
@@ -214,7 +177,7 @@ ls -la /opt/src/food-order-3tier-aws
 cd /opt/src/food-order-3tier-aws/v1.1.0
 ```
 
-### 6.2 Existing servers (already chowned to `food-order-3tier`)
+### 5.2 Existing servers (already chowned to `food-order-3tier`)
 
 If an older `setup-server.sh` already ran `chown -R food-order-3tier` on the git tree, fix ownership once, then use the helper:
 
@@ -227,7 +190,7 @@ sudo bash scripts/add-release-worktree.sh v1.1.0
 
 Leave `/opt/food-order-3tier-aws/` owned by `food-order-3tier`.
 
-### 6.3 Inspect worktrees and update `main`
+### 5.3 Inspect worktrees and update `main`
 
 Work from the git root:
 
@@ -254,7 +217,7 @@ After adding `v1.1.0`:
 /opt/src/food-order-3tier-aws/v1.1.0    <commit>  (detached at v1.1.0)
 ```
 
-### 6.4 If `invalid reference: v1.1.0` still happens
+### 5.4 If `invalid reference: v1.1.0` still happens
 
 Fetch succeeded but the tag is not in this bare repo. Check local vs remote:
 
@@ -264,7 +227,7 @@ sudo git -C /opt/src/food-order-3tier-aws/.bare ls-remote --tags origin
 ```
 
 - Remote has `refs/tags/v1.1.0` but local does not → run `sudo bash scripts/add-release-worktree.sh v1.1.0` again (it fetches tags explicitly).
-- Remote has a **different** name (`v1.1`, `v1.0.0`) → use that tag, or push `v1.1.0` from the build machine.
+- Remote has a **different** name (`v1.1`, `v1.0.0`) → use that tag, or push `v1.1.0` from your repository.
 - Remote has nothing → tag was never pushed:
 
 ```bash
@@ -272,21 +235,7 @@ git tag -a v1.1.0 -m "Release v1.1.0"
 git push origin v1.1.0
 ```
 
-### 6.5 Build and compare env from the release worktree
-
-```bash
-cd /opt/src/food-order-3tier-aws/v1.1.0
-make
-make build
-ls -al
-diff .env.template /opt/food-order-3tier-aws/shared/.env
-```
-
-`shared/.env` is never overwritten by a deploy. If the template has new keys, edit `/opt/food-order-3tier-aws/shared/.env`, then continue with [section 7](#7-deployment-workflow-on-production-server).
-
-`current` under `/opt/food-order-3tier-aws/` is the runtime symlink systemd uses as `WorkingDirectory`. Flipping it is the cutover (see [section 8](#8-rollback-strategy)).
-
-### 6.6 Useful worktree commands
+### 5.5 Useful worktree commands
 
 | Task | Command |
 |------|---------|
@@ -300,15 +249,9 @@ Do **not** delete a release directory with `rm -rf` while it is still a worktree
 
 ---
 
-## 7. Deployment Workflow (On Production Server)
+## 6. Build & Deployment Workflow (On Production Server)
 
-There are two deployment workflows supported on the production server:
-- **Method A (Recommended — Git Worktree)**: Uses Git worktrees to check out versioned release tags. Ideal when the server has SSH access to GitHub.
-- **Method B (Airgapped / Tarball Archive)**: Uses the pre-packaged `.tar.gz` bundle produced by `make release`. Ideal when the server has no direct internet or GitHub access.
-
----
-
-### Method A: Git Worktree Workflow (Recommended)
+All container builds and release deployments run directly on the production server.
 
 Follow these step-by-step instructions directly on your production server:
 
@@ -330,20 +273,17 @@ ls -la
 ```
 *You should see `docker-compose.yml`, `docker-compose.prod.yml`, `.env.template`, `Makefile`, and `scripts/`.*
 
-#### Step 3: Ensure Docker Images are Loaded or Built
-Depending on whether you built images locally or on the server:
-- **Option 1 (Pre-built image tarballs)**: If you transferred tarballs to `docker-images/`:
-  ```bash
-  # Check tarball existence
-  ls -lh docker-images/
-  # Load manually (or let deploy.sh --load-images do it):
-  docker load -i docker-images/food-api-v1.1.0.tar.gz
-  docker load -i docker-images/food-ui-v1.1.0.tar.gz
-  ```
-- **Option 2 (Build on server)**: If building directly on this machine:
-  ```bash
-  make build
-  ```
+#### Step 3: Build Docker Images Directly on the Server
+Build the versioned Docker images (`food-api:v1.1.0` and `food-ui:v1.1.0`) directly on the server:
+```bash
+make build
+```
+*(This triggers `scripts/build.sh`, auto-detects version `v1.1.0` from Git, and builds `food-api:v1.1.0` and `food-ui:v1.1.0` into the server's Docker engine).*
+
+Verify the built images in Docker:
+```bash
+docker images | grep -E "food-api|food-ui"
+```
 
 #### Step 4: Configure Production Secrets (`shared/.env`)
 All production secrets are stored persistently in `/opt/food-order-3tier-aws/shared/.env`. This file is **never overwritten** by future deployments.
@@ -398,12 +338,11 @@ Run the automated deployment script from your release worktree:
 ```bash
 sudo bash scripts/deploy.sh --version=v1.1.0
 ```
-*(Add `--load-images` if you have tarballs in `docker-images/` that you want the script to load automatically).*
 
 The deployment script executes seven automated stages:
 | Stage | Description |
 |-------|-------------|
-| `[1/7] Loading Docker images` | Loads `food-api` & `food-ui` tarballs (if `--load-images` is specified). |
+| `[1/7] Loading Docker images` | Skipped because images were already built directly on the server. |
 | `[2/7] Service user` | Ensures the dedicated service user `food-order-3tier` exists and has `docker` group membership. |
 | `[3/7] Release directory` | Creates `/opt/food-order-3tier-aws/releases/v1.1.0/` and syncs Compose files, `.env.template`, and scripts. |
 | `[4/7] Shared directory + .env` | Combines persistent secrets from `shared/.env` with `APP_VERSION=v1.1.0` into `releases/v1.1.0/.env`. |
@@ -438,46 +377,7 @@ curl -I http://localhost:8080/
 
 ---
 
-### Method B: Airgapped / Tarball Archive Workflow
-
-If deploying to an airgapped production server without Git or internet access:
-
-#### Step 1: Copy Archive to Server
-On your build machine, transfer the archive created by `make release`:
-```bash
-scp food-order-3tier-v1.1.0.tar.gz ubuntu@<production-server-ip>:/tmp/
-```
-
-#### Step 2: Extract the Package
-On the production server:
-```bash
-cd /tmp
-tar -xzf food-order-3tier-v1.1.0.tar.gz
-cd food-order-3tier-v1.1.0
-```
-
-#### Step 3: Configure Shared Secrets
-Configure `/opt/food-order-3tier-aws/shared/.env` as detailed in Method A Step 4:
-```bash
-sudo mkdir -p /opt/food-order-3tier-aws/shared
-if [ ! -f /opt/food-order-3tier-aws/shared/.env ]; then
-  sudo cp .env.template /opt/food-order-3tier-aws/shared/.env
-  sudo chmod 600 /opt/food-order-3tier-aws/shared/.env
-  sudo nano /opt/food-order-3tier-aws/shared/.env
-fi
-```
-
-#### Step 4: Run Deployment
-```bash
-sudo bash scripts/deploy.sh --load-images --version=v1.1.0
-```
-
-#### Step 5: Run Migrations and Verify
-Execute Step 6 and Step 7 from Method A to apply database migrations and verify the services.
-
----
-
-## 8. Rollback Strategy
+## 7. Rollback Strategy
 
 If an issue is detected in the new release, you can roll back to the previous version within seconds:
 
@@ -496,7 +396,7 @@ Because the older Docker images are already loaded in the Docker engine, the rol
 
 ---
 
-## 9. Day-to-Day Server Operations
+## 8. Day-to-Day Server Operations
 
 Always run docker compose commands from the `current` symlink directory, as it contains the correct version contexts:
 
@@ -520,7 +420,7 @@ cd /opt/food-order-3tier-aws/current
 
 ---
 
-## 10. Troubleshooting & Common Deployment Errors
+## 9. Troubleshooting & Common Deployment Errors
 
 ### 1. `rsync: link_stat ".../.env.template" failed: No such file or directory`
 - **Cause**: Step `[3/7]` requires `.env.template` to copy into the release directory and validate production variables. If this file was missing from older Git commits (historically masked by a `.gitignore` rule ignoring `.env.*`), the deployment stops here.
