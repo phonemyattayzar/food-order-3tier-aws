@@ -99,6 +99,19 @@ git tag -a v1.1.0 -m "Release v1.1.0"
 git push origin v1.1.0
 ```
 
+GitHub rejects HTTPS username/password. If `git remote -v` shows `https://github.com/...`, switch the remote to SSH (the same key used to clone `/opt/src/...`):
+
+```bash
+git remote -v
+git tag -l 'v1.1.0'          # local tag already exists → do not create it again
+git ls-remote --tags origin  # see if GitHub already has it
+
+git remote set-url origin git@github.com:phonemyattayzar/food-order-3tier-aws.git
+git push origin v1.1.0
+```
+
+If `ls-remote` already shows `refs/tags/v1.1.0`, skip the push and fetch that tag on the server instead.
+
 ### 2. Build and Package
 ```bash
 make release
