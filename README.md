@@ -13,9 +13,10 @@ This approach ensures zero-downtime cutovers, fail-safe environment variable val
 3. [Local Development](#3-local-development)
 4. [Build Workflow (On Developer/Build Machine)](#4-build-workflow-on-developerbuild-machine)
 5. [First-Time Server Provisioning](#5-first-time-server-provisioning)
-6. [Deployment Workflow (On Production Server)](#6-deployment-workflow-on-production-server)
-7. [Rollback Strategy](#7-rollback-strategy)
-8. [Day-to-Day Server Operations](#8-day-to-day-server-operations)
+6. [Git Worktree Setup (On Production Server)](#6-git-worktree-setup-on-production-server)
+7. [Deployment Workflow (On Production Server)](#7-deployment-workflow-on-production-server)
+8. [Rollback Strategy](#8-rollback-strategy)
+9. [Day-to-Day Server Operations](#9-day-to-day-server-operations)
 
 ---
 
@@ -23,19 +24,32 @@ This approach ensures zero-downtime cutovers, fail-safe environment variable val
 
 ### Host Directory Layout
 
-All releases on the target server are organized under `/opt/food-order-3tier-aws/`:
+Two directories work together: a **git worktree tree** (source) and a **runtime tree** (Compose + symlink cutover).
+
+**Git worktree (source) — `/opt/src/food-order-3tier-aws/`**
+
+```
+/opt/src/food-order-3tier-aws/
+  .bare/                 ← bare clone (shared git objects for all worktrees)
+  .git                   → gitdir: ./.bare
+  main/                  ← worktree tracking the main branch
+```
+
+**Runtime (release cutover) — `/opt/food-order-3tier-aws/`**
 
 ```
 /opt/food-order-3tier-aws/
   releases/
-    v1.0.0/            ← Previous release (kept for rollback safety)
-    v1.1.0/            ← Current active release directory
-  current              → releases/v1.1.0   (symlink; systemd WorkingDirectory)
+    v1.0.0/              ← Previous release (kept for rollback)
+    v1.1.0/              ← Current active release directory
+  current                → /opt/food-order-3tier-aws/releases/v1.1.0
   shared/
-    .env               ← Production secrets (never overwritten by deploys)
+    .env                 ← Production secrets (never overwritten by deploys)
 ```
 
-Each version folder in `releases/` contains only what is required to orchestrate the containers (Compose files, scripts, env configurations). The source code and runtime dependencies live inside the Docker images themselves.
+Each version folder in `releases/` contains what is required to orchestrate the containers (Compose files, scripts, env). The application code and runtime dependencies live inside the Docker images.
+
+This is the same pattern as a typical production layout (`current` symlink + `releases/<version>` + `shared/.env`), with git worktrees used to check out each tagged version without recloning.
 
 ### Compose Configuration Roles
 
@@ -105,17 +119,163 @@ scp food-order-3tier-v1.1.0.tar.gz user@production-server:/tmp/
 
 ## 5. First-Time Server Provisioning
 
-Run this command once on a newly provisioned server to set up the repository directories:
+Run this once on a newly provisioned server. It creates the bare clone and the `main` worktree:
 
 ```bash
 sudo bash scripts/setup-server.sh
 ```
 
-This creates `/opt/src/food-order-3tier-aws/` using a Git worktree model, preparing the repository on the server.
+This creates `/opt/src/food-order-3tier-aws/` using a git worktree model:
+
+| Path | Role |
+|------|------|
+| `/opt/src/food-order-3tier-aws/.bare` | Bare clone of the GitHub repo |
+| `/opt/src/food-order-3tier-aws/.git` | Pointer file: `gitdir: ./.bare` |
+| `/opt/src/food-order-3tier-aws/main` | Worktree for the `main` branch |
+
+The script also ensures the `food-order-3tier` service user exists. After it finishes you should see:
+
+```
+Server git setup complete.
+  Bare repo : /opt/src/food-order-3tier-aws/.bare
+  Worktree  : /opt/src/food-order-3tier-aws/main
+```
 
 ---
 
-## 6. Deployment Workflow (On Production Server)
+## 6. Git Worktree Setup (On Production Server)
+
+Use git worktrees so each tagged release is a separate checkout. You never clone the repo again; you fetch tags, then add a worktree for that version.
+
+Work from the git root (the directory that contains the `.git` pointer):
+
+```bash
+cd /opt/src/food-order-3tier-aws
+```
+
+### 6.1 Inspect the current worktrees
+
+```bash
+git worktree list
+git -C main status
+```
+
+Expected first-time output of `git worktree list`:
+
+```
+/opt/src/food-order-3tier-aws/.bare  (bare)
+/opt/src/food-order-3tier-aws/main   <commit>  [main]
+```
+
+### 6.2 Fetch and update `main`
+
+Always refresh `main` before cutting a new release worktree:
+
+```bash
+git fetch
+git -C main status
+git -C main pull
+git log --oneline -n 10
+```
+
+Equivalent if you prefer to `cd` into the worktree:
+
+```bash
+cd /opt/src/food-order-3tier-aws
+git fetch
+cd main
+git status
+git pull
+git log --oneline
+cd ..
+git worktree list
+```
+
+### 6.3 Add a worktree for a tagged release
+
+Tags must exist on the remote (see [section 4](#4-build-workflow-on-developerbuild-machine)). After `git fetch`, add a worktree named after the tag:
+
+```bash
+cd /opt/src/food-order-3tier-aws
+git fetch --tags
+git worktree add v1.1.0 v1.1.0
+cd v1.1.0
+```
+
+That creates `/opt/src/food-order-3tier-aws/v1.1.0` checked out at tag `v1.1.0`. You can also place release worktrees under the runtime `releases/` directory (same idea as `/opt/ftth-dashboard/releases/v1.7.0`):
+
+```bash
+cd /opt/src/food-order-3tier-aws
+sudo mkdir -p /opt/food-order-3tier-aws/releases
+git worktree add /opt/food-order-3tier-aws/releases/v1.1.0 v1.1.0
+cd /opt/food-order-3tier-aws/releases/v1.1.0
+```
+
+After this, `git worktree list` looks like:
+
+```
+/opt/src/food-order-3tier-aws/.bare                   (bare)
+/opt/src/food-order-3tier-aws/main                    <commit>  [main]
+/opt/food-order-3tier-aws/releases/v1.1.0             <commit>  [v1.1.0]
+```
+
+And the runtime tree looks like:
+
+```
+/opt/food-order-3tier-aws/
+  current -> /opt/food-order-3tier-aws/releases/v1.1.0
+  releases/
+    v1.1.0/
+  shared/
+    .env
+```
+
+`current` is a symlink. systemd uses it as `WorkingDirectory`, so flipping `current` is the cutover (see [section 8](#8-rollback-strategy)).
+
+### 6.4 Build from the release worktree
+
+From the version checkout:
+
+```bash
+cd /opt/food-order-3tier-aws/releases/v1.1.0
+# or: cd /opt/src/food-order-3tier-aws/v1.1.0
+
+make
+make build
+ls -al
+```
+
+`make build` runs `scripts/build.sh` and produces versioned Docker images from this tag.
+
+### 6.5 Compare env template with production secrets
+
+`shared/.env` is never overwritten by a deploy. Diff it against the release template so you add any new keys before cutover:
+
+```bash
+diff .env.template /opt/food-order-3tier-aws/shared/.env
+
+# if files are owned by the service user:
+sudo -u food-order-3tier diff .env.template /opt/food-order-3tier-aws/shared/.env
+```
+
+If the template has new variables, edit `/opt/food-order-3tier-aws/shared/.env`, then continue with [section 7](#7-deployment-workflow-on-production-server).
+
+### 6.6 Useful worktree commands
+
+| Task | Command |
+|------|---------|
+| List worktrees | `git worktree list` |
+| Fetch branches and tags | `git fetch --tags` |
+| Update `main` | `git -C main pull` |
+| Add a tagged release | `git worktree add /opt/food-order-3tier-aws/releases/v1.1.0 v1.1.0` |
+| Remove an old worktree | `git worktree remove /opt/food-order-3tier-aws/releases/v1.0.0` |
+| Prune stale worktree metadata | `git worktree prune` |
+
+Do **not** delete a release directory with `rm -rf` while it is still a worktree. Use `git worktree remove` so git metadata stays consistent.
+
+---
+
+## 7. Deployment Workflow (On Production Server)
 
 ### 1. Extract the Archive
 ```bash
@@ -169,7 +329,7 @@ curl -s http://localhost:8080/
 
 ---
 
-## 7. Rollback Strategy
+## 8. Rollback Strategy
 
 If an issue is detected in the new release, you can roll back to the previous version within seconds:
 
@@ -188,7 +348,7 @@ Because the older Docker images are already loaded in the Docker engine, the rol
 
 ---
 
-## 8. Day-to-Day Server Operations
+## 9. Day-to-Day Server Operations
 
 Always run docker compose commands from the `current` symlink directory, as it contains the correct version contexts:
 
@@ -206,5 +366,6 @@ cd /opt/food-order-3tier-aws/current
 | View Frontend logs | `docker logs -f food_ui --tail 100` |
 | List running containers | `docker compose -f docker-compose.yml -f docker-compose.prod.yml ps` |
 | List release history | `ls -lt /opt/food-order-3tier-aws/releases/` |
+| List git worktrees | `git -C /opt/src/food-order-3tier-aws worktree list` |
 
 > ⚠️ **Caution**: Never run `docker compose down -v`. The `-v` flag will destroy the named Docker volume `postgres_data`, resulting in permanent database loss. Use `docker compose down` instead.
