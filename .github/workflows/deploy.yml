@@ -1,0 +1,306 @@
+name: Zero-Downtime Production Deployment
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  id-token: write # Required for AWS OIDC authentication (Role Assumption)
+  contents: read  # Required to checkout the source repository
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'food-order-api' }}
+  ASG_NAME_PREFIX: ${{ vars.ASG_NAME_PREFIX || 'food-order-3tier-prod-asg' }}
+  FRONTEND_BUCKET_PREFIX: ${{ vars.FRONTEND_BUCKET_PREFIX || 'food-order-3tier-prod-frontend' }}
+  CLOUDFRONT_DIST_COMMENT: ${{ vars.CLOUDFRONT_DIST_COMMENT || 'food-order-3tier-prod-frontend' }}
+  VITE_API_BASE: ${{ vars.VITE_API_BASE || '/api/v1' }}
+
+jobs:
+  # ============================================================================
+  # Job 1: Backend Deployment (Docker Build, ECR Push & ASG Instance Refresh)
+  # ============================================================================
+  deploy-backend:
+    name: Backend - Build, Push & Refresh ASG
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ------------------------------------------------------------------------
+      # 1. Checkout Source Code
+      # ------------------------------------------------------------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------------
+      # 2. Authenticate to AWS via OIDC (or Fallback IAM Credentials)
+      # ------------------------------------------------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          role-session-name: GitHubActions-ZeroDowntimeDeploy-Backend
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      # ------------------------------------------------------------------------
+      # 3. Log in to Amazon ECR
+      # ------------------------------------------------------------------------
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ------------------------------------------------------------------------
+      # 4. Set up Docker Buildx (for optimized multi-stage build caching)
+      # ------------------------------------------------------------------------
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ------------------------------------------------------------------------
+      # 5. Build and Push Docker Image with Commit SHA & latest Tags
+      # ------------------------------------------------------------------------
+      - name: Build and Push Application Image
+        id: build-image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ------------------------------------------------------------------------
+      # 6. Resolve Target Auto Scaling Group Name
+      # ------------------------------------------------------------------------
+      - name: Resolve Auto Scaling Group Name
+        id: get-asg
+        run: |
+          echo "Resolving ASG name matching prefix: ${{ env.ASG_NAME_PREFIX }}..."
+
+          RESOLVED_ASG=$(aws autoscaling describe-auto-scaling-groups \
+            --region "${{ env.AWS_REGION }}" \
+            --query "AutoScalingGroups[?contains(AutoScalingGroupName, '${{ env.ASG_NAME_PREFIX }}')].AutoScalingGroupName | [0]" \
+            --output text)
+
+          if [ -z "$RESOLVED_ASG" ] || [ "$RESOLVED_ASG" = "None" ]; then
+            if [ -n "${{ secrets.ASG_NAME }}" ]; then
+              RESOLVED_ASG="${{ secrets.ASG_NAME }}"
+            else
+              echo "Error: Could not locate Auto Scaling Group with prefix '${{ env.ASG_NAME_PREFIX }}'."
+              exit 1
+            fi
+          fi
+
+          echo "Target ASG: $RESOLVED_ASG"
+          echo "asg_name=$RESOLVED_ASG" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------------
+      # 7. Trigger Zero-Downtime ASG Instance Refresh
+      # ------------------------------------------------------------------------
+      - name: Trigger Instance Refresh
+        id: trigger-refresh
+        run: |
+          ASG_NAME="${{ steps.get-asg.outputs.asg_name }}"
+          echo "Initiating rolling instance refresh for ASG: $ASG_NAME..."
+
+          REFRESH_ID=$(aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "$ASG_NAME" \
+            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 300}' \
+            --region "${{ env.AWS_REGION }}" \
+            --query "InstanceRefreshId" \
+            --output text)
+
+          echo "Started Instance Refresh with ID: $REFRESH_ID"
+          echo "refresh_id=$REFRESH_ID" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------------
+      # 8. Monitor Instance Refresh Status until Successful
+      # ------------------------------------------------------------------------
+      - name: Wait for Zero-Downtime Rollout to Complete
+        run: |
+          ASG_NAME="${{ steps.get-asg.outputs.asg_name }}"
+          REFRESH_ID="${{ steps.trigger-refresh.outputs.refresh_id }}"
+          echo "Monitoring rollout progress for Refresh ID: $REFRESH_ID on $ASG_NAME..."
+
+          while true; do
+            REFRESH_DATA=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name "$ASG_NAME" \
+              --instance-refresh-ids "$REFRESH_ID" \
+              --region "${{ env.AWS_REGION }}" \
+              --query "InstanceRefreshes[0]" \
+              --output json)
+
+            STATUS=$(echo "$REFRESH_DATA" | jq -r '.Status')
+            PERCENT_DONE=$(echo "$REFRESH_DATA" | jq -r '.PercentageComplete // 0')
+
+            echo "Current Status: $STATUS (${PERCENT_DONE}% completed)"
+
+            if [ "$STATUS" = "Successful" ]; then
+              echo "==> Instance refresh completed successfully! Zero-downtime deployment finished."
+              break
+            elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "RollbackSuccessful" ] || [ "$STATUS" = "RollbackFailed" ]; then
+              STATUS_REASON=$(echo "$REFRESH_DATA" | jq -r '.StatusReason // "No reason provided"')
+              echo "Error: Instance refresh ended with status '$STATUS'. Reason: $STATUS_REASON"
+              exit 1
+            fi
+
+            sleep 15
+          done
+
+  # ============================================================================
+  # Job 2: Frontend Deployment (Vite Build, S3 Upload & CloudFront Invalidation)
+  # ============================================================================
+  deploy-frontend:
+    name: Frontend - Build, Upload & Invalidate CDN
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ------------------------------------------------------------------------
+      # 1. Checkout Source Code
+      # ------------------------------------------------------------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------------
+      # 2. Set up Node.js Runtime
+      # ------------------------------------------------------------------------
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      # ------------------------------------------------------------------------
+      # 3. Install Frontend Dependencies
+      # ------------------------------------------------------------------------
+      - name: Install Frontend Dependencies
+        working-directory: ./frontend
+        run: |
+          echo "Installing npm dependencies..."
+          npm ci
+
+      # ------------------------------------------------------------------------
+      # 4. Build React SPA with Vite
+      # ------------------------------------------------------------------------
+      - name: Build React Application
+        working-directory: ./frontend
+        env:
+          VITE_API_BASE: ${{ env.VITE_API_BASE }}
+        run: |
+          echo "Building production React SPA with VITE_API_BASE=${{ env.VITE_API_BASE }}..."
+          npm run build
+          echo "Build artifacts successfully generated:"
+          ls -la dist/
+
+      # ------------------------------------------------------------------------
+      # 5. Authenticate to AWS via OIDC (or Fallback IAM Credentials)
+      # ------------------------------------------------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          role-session-name: GitHubActions-ZeroDowntimeDeploy-Frontend
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      # ------------------------------------------------------------------------
+      # 6. Resolve Target S3 Bucket & CloudFront Distribution
+      # ------------------------------------------------------------------------
+      - name: Resolve S3 Bucket and CloudFront Distribution
+        id: resolve-resources
+        run: |
+          # 1. Resolve S3 Bucket Name
+          echo "Resolving frontend S3 bucket..."
+          if [ -n "${{ vars.FRONTEND_S3_BUCKET }}" ]; then
+            RESOLVED_BUCKET="${{ vars.FRONTEND_S3_BUCKET }}"
+          elif [ -n "${{ secrets.FRONTEND_S3_BUCKET }}" ]; then
+            RESOLVED_BUCKET="${{ secrets.FRONTEND_S3_BUCKET }}"
+          else
+            RESOLVED_BUCKET=$(aws s3api list-buckets \
+              --query "Buckets[?starts_with(Name, '${{ env.FRONTEND_BUCKET_PREFIX }}')].Name | [0]" \
+              --output text)
+          fi
+
+          if [ -z "$RESOLVED_BUCKET" ] || [ "$RESOLVED_BUCKET" = "None" ]; then
+            echo "Error: Could not locate S3 bucket matching prefix '${{ env.FRONTEND_BUCKET_PREFIX }}'."
+            exit 1
+          fi
+          echo "Target S3 Bucket: $RESOLVED_BUCKET"
+          echo "bucket_name=$RESOLVED_BUCKET" >> "$GITHUB_OUTPUT"
+
+          # 2. Resolve CloudFront Distribution ID
+          echo "Resolving CloudFront distribution..."
+          if [ -n "${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}" ]; then
+            RESOLVED_CF_ID="${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}"
+          elif [ -n "${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}" ]; then
+            RESOLVED_CF_ID="${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}"
+          else
+            RESOLVED_CF_ID=$(aws cloudfront list-distributions \
+              --query "DistributionList.Items[?contains(Comment, '${{ env.CLOUDFRONT_DIST_COMMENT }}')].Id | [0]" \
+              --output text)
+          fi
+
+          if [ -z "$RESOLVED_CF_ID" ] || [ "$RESOLVED_CF_ID" = "None" ]; then
+            echo "Error: Could not locate CloudFront distribution with comment matching '${{ env.CLOUDFRONT_DIST_COMMENT }}'."
+            exit 1
+          fi
+          echo "Target CloudFront Distribution ID: $RESOLVED_CF_ID"
+          echo "cf_dist_id=$RESOLVED_CF_ID" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------------
+      # 7. Upload Build Artifacts to S3 with Optimized Caching Headers
+      # ------------------------------------------------------------------------
+      - name: Deploy Assets to S3
+        run: |
+          BUCKET_NAME="${{ steps.resolve-resources.outputs.bucket_name }}"
+          echo "Deploying React build artifacts to S3 bucket: $BUCKET_NAME..."
+
+          # Upload static hashed assets with 1-year immutable cache header
+          if [ -d "./frontend/dist/assets" ]; then
+            echo "Syncing hashed assets with immutable cache-control headers..."
+            aws s3 sync ./frontend/dist/assets "s3://${BUCKET_NAME}/assets" \
+              --cache-control "public, max-age=31536000, immutable"
+          fi
+
+          # Upload remaining root files (including index.html) with no-cache header
+          echo "Syncing HTML and root files with no-cache header..."
+          aws s3 sync ./frontend/dist "s3://${BUCKET_NAME}" \
+            --delete \
+            --exclude "assets/*" \
+            --cache-control "no-cache, no-store, must-revalidate"
+
+          echo "S3 asset synchronization complete."
+
+      # ------------------------------------------------------------------------
+      # 8. Invalidate CloudFront CDN Cache
+      # ------------------------------------------------------------------------
+      - name: Invalidate CloudFront Cache
+        run: |
+          CF_DIST_ID="${{ steps.resolve-resources.outputs.cf_dist_id }}"
+          echo "Creating CloudFront cache invalidation for distribution: $CF_DIST_ID..."
+
+          INVALIDATION_ID=$(aws cloudfront create-invalidation \
+            --distribution-id "$CF_DIST_ID" \
+            --paths "/*" \
+            --query "Invalidation.Id" \
+            --output text)
+
+          echo "Invalidation created with ID: $INVALIDATION_ID"
+
+          # Retrieve and display public CloudFront URL
+          CF_DOMAIN=$(aws cloudfront get-distribution \
+            --id "$CF_DIST_ID" \
+            --query "Distribution.DomainName" \
+            --output text)
+
+          echo "==> Frontend deployment completed successfully!"
+          echo "==> CloudFront URL: https://${CF_DOMAIN}"
