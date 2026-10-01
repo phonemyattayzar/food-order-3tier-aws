@@ -2,7 +2,7 @@
 
 A simple, production-ready, and maintainable AWS 3-tier infrastructure deployment for an outsource client using Terraform. 
 
-This repository provisions an internet-facing **Application Load Balancer (ALB)**, an **EC2 Auto Scaling Group (ASG)** running containerized application services pulled from **AWS ECR** across private subnets, and an isolated **Multi-AZ RDS PostgreSQL** database tier, backed by remote state management using **Amazon S3** and **DynamoDB**.
+This repository provisions an internet-facing **Application Load Balancer (ALB)**, an **EC2 Auto Scaling Group (ASG)** running containerized application services pulled from **AWS ECR** across private subnets, and an isolated **Multi-AZ RDS PostgreSQL** database tier, backed by remote state management using **Amazon S3** with **native state locking** (`use_lockfile = true`, eliminating the need for DynamoDB).
 
 ---
 
@@ -50,8 +50,7 @@ flowchart TD
         subgraph Supporting["Supporting AWS Services"]
             ECR["AWS ECR (Docker Repositories)"]
             SSM["AWS SSM Session Manager (No SSH Port 22)"]
-            S3_Backend["S3 Remote State Bucket"]
-            DDB_Lock["DynamoDB State Lock Table"]
+            S3_Backend["S3 Remote State Bucket (Native S3 State Locking)"]
             SM["AWS Secrets Manager / KMS"]
         end
     end
@@ -82,9 +81,9 @@ terraform/
 ├── README.md                            # Documentation and deployment runbook
 │
 ├── bootstrap/                           # Phase 1: One-time setup for remote state backend
-│   ├── main.tf                          # S3 bucket (versioning, encryption, public block) & DynamoDB table
-│   ├── variables.tf                     # Bucket naming, DynamoDB table name, region
-│   ├── outputs.tf                       # Exports state bucket name and lock table name
+│   ├── main.tf                          # S3 bucket (versioning, encryption, public access block)
+│   ├── variables.tf                     # Bucket naming and target AWS region
+│   ├── outputs.tf                       # Exports state bucket name
 │   └── terraform.tfvars                 # Project prefix and region variables
 │
 ├── modules/                             # Reusable, modular building blocks
@@ -145,16 +144,17 @@ terraform/
 
 ### A. Remote State Bootstrap (`terraform/bootstrap/`)
 > [!IMPORTANT]
-> **The State Dependency Dilemma**: You cannot configure an S3 backend inside Terraform before that S3 bucket and DynamoDB table exist. The `bootstrap/` folder solves this by running first with local state to provision the remote backend resources.
+> **The State Dependency Dilemma**: You cannot configure an S3 backend inside Terraform before that S3 bucket exists. The `bootstrap/` folder solves this by running first with local state to provision the remote backend bucket.
+>
+> **Modern State Locking (Terraform >= 1.10)**: Amazon S3 natively supports state locking using S3 conditional writes. A DynamoDB table is **no longer required**! Simply specify `use_lockfile = true` in your S3 backend configuration. When Terraform runs an operation, it conditionally creates a `.tflock` file directly in the S3 bucket to prevent concurrent executions, and automatically removes it upon completion.
 
 - **`bootstrap/main.tf`**:
-  - `aws_s3_bucket`: Dedicated S3 bucket for storing `.tfstate` files.
-  - `aws_s3_bucket_versioning`: Protects against accidental state deletion or corruption by maintaining a version history of every state file.
+  - `aws_s3_bucket`: Dedicated S3 bucket for storing `.tfstate` files and native state lock files (`.tflock`).
+  - `aws_s3_bucket_versioning`: Protects against accidental state deletion or corruption by maintaining a version history of every state file (recommended for S3 native locking).
   - `aws_s3_bucket_server_side_encryption_configuration`: Enforces AES-256 or AWS KMS encryption at rest (state files can contain sensitive resource metadata).
   - `aws_s3_bucket_public_access_block`: Blocks all public ACLs and bucket policies.
-  - `aws_dynamodb_table`: Creates a DynamoDB table with partition key `LockID` (String) to provide distributed state locking and prevent race conditions.
-- **`bootstrap/variables.tf` & `terraform.tfvars`**: Declares and assigns the bucket prefix, DynamoDB table name, and target AWS region.
-- **`bootstrap/outputs.tf`**: Outputs the bucket name and DynamoDB table name to copy into `environments/*/backend.tf`.
+- **`bootstrap/variables.tf` & `terraform.tfvars`**: Declares and assigns the bucket prefix and target AWS region.
+- **`bootstrap/outputs.tf`**: Outputs the bucket name to copy into backend configuration files.
 
 ---
 
@@ -233,17 +233,19 @@ terraform/
 
 ---
 
-### C. Environments (`terraform/environments/dev/` and `prod/`)
+### C. Environments (`terraform/environments/dev/` and `prod/` or `terraform/`)
 
-- **`backend.tf`**: Connects to the bootstrap remote state:
+- **`backend.tf` / `main.tf`**: Connects to the remote state with **native S3 state locking**:
   ```hcl
   terraform {
+    required_version = ">= 1.10.0"
+
     backend "s3" {
-      bucket         = "client-project-tfstate-123456789012"
-      key            = "prod/terraform.tfstate"  # Or "dev/terraform.tfstate"
-      region         = "us-east-1"
-      dynamodb_table = "client-project-tfstate-locks"
-      encrypt        = true
+      bucket       = "client-project-tfstate-123456789012"
+      key          = "prod/terraform.tfstate"  # Or "networking/terraform.tfstate"
+      region       = "us-east-1"
+      encrypt      = true
+      use_lockfile = true  # Native S3 state locking (Terraform >= 1.10, eliminates DynamoDB)
     }
   }
   ```
@@ -274,18 +276,47 @@ terraform/
 
 ### Phase 1: Deploy Remote State Backend (One-Time Setup)
 
+Terraform 1.10+ supports native S3 state locking using S3 conditional writes, eliminating the need to create or manage a separate DynamoDB table.
+
+You can provision your remote state S3 bucket using either the AWS CLI or Terraform bootstrap:
+
+#### Option A: Quick Setup via AWS CLI
+```bash
+# 1. Create S3 bucket (ap-southeast-1 example; adjust region as needed)
+aws s3api create-bucket \
+  --bucket <your-unique-tfstate-bucket> \
+  --region ap-southeast-1 \
+  --create-bucket-configuration LocationConstraint=ap-southeast-1
+
+# 2. Enable Bucket Versioning (recommended for state recovery and lock consistency)
+aws s3api put-bucket-versioning \
+  --bucket <your-unique-tfstate-bucket> \
+  --versioning-configuration Status=Enabled
+
+# 3. Enable Default SSE-S3 Encryption (AES256)
+aws s3api put-bucket-encryption \
+  --bucket <your-unique-tfstate-bucket> \
+  --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+# 4. Block All Public Access
+aws s3api put-public-access-block \
+  --bucket <your-unique-tfstate-bucket> \
+  --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+```
+
+#### Option B: Setup via Terraform Bootstrap
 ```bash
 cd terraform/bootstrap
 
-# Initialize and create S3 bucket + DynamoDB table
+# Initialize and create S3 state bucket
 terraform init
 terraform plan -out=tfplan
 terraform apply tfplan
 
-# Note the output bucket and DynamoDB table names
+# Note the output bucket name
 ```
 
-Update `environments/dev/backend.tf` and `environments/prod/backend.tf` with the S3 bucket and DynamoDB table names from the bootstrap output.
+Update your backend configuration (e.g., `terraform/main.tf` or `environments/*/backend.tf`) with your S3 bucket name. With `use_lockfile = true`, Terraform manages locks natively in S3 without DynamoDB.
 
 ---
 
@@ -309,9 +340,9 @@ docker push <account_id>.dkr.ecr.<region>.amazonaws.com/food-order-api:latest
 ### Phase 3: Deploy the 3-Tier Infrastructure
 
 ```bash
-cd terraform/environments/dev   # Or terraform/environments/prod
+cd terraform   # Or cd terraform/environments/dev if using environment subdirectories
 
-# Initialize with remote S3 backend and DynamoDB locking
+# Initialize with remote S3 backend and native S3 state locking
 terraform init
 
 # Review changes
@@ -365,3 +396,17 @@ terraform apply tfplan
    - For **Production**, set `single_nat_gateway = false` so each AZ has its own independent NAT Gateway, ensuring complete AZ fault isolation.
 6. **Secrets Handling**:
    Never commit `.tfvars` files containing plaintext passwords to version control. Passwords should be generated via Terraform `random_password`, stored in AWS Secrets Manager, and read by the application at startup.
+7. **Native S3 State Locking (No DynamoDB Required)**:
+   - Starting in **Terraform 1.10+**, the `s3` backend natively supports distributed state locking via S3 conditional writes.
+   - Configure `use_lockfile = true` in the `backend "s3"` block.
+   - Terraform automatically creates, verifies, and deletes a `<state-key>.tflock` file directly in the S3 bucket using S3 conditional write requests (`If-None-Match`), preventing concurrent modifications.
+   - **Key Advantages**:
+     - **Zero Additional Cost**: Eliminates DynamoDB capacity/request charges and table management overhead.
+     - **Simplified Bootstrap**: Only an S3 bucket with versioning is required—no need to provision or coordinate a separate DynamoDB table.
+     - **Streamlined IAM Permissions**: CI/CD and deployment roles only need S3 permissions (`s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket`) on the state bucket, without requiring any `dynamodb:*` actions.
+     - **Deprecation Alignment**: The legacy `dynamodb_table` argument was marked as deprecated starting in Terraform 1.11+.
+   - **Migration from DynamoDB**: To migrate an existing stack, remove `dynamodb_table`, add `use_lockfile = true`, and run:
+     ```bash
+     terraform init -migrate-state  # or terraform init -reconfigure
+     ```
+     Once initialized, you can safely retire the legacy DynamoDB lock table.
