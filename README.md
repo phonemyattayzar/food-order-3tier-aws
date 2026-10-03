@@ -1,8 +1,8 @@
 # 🍽️ AWS 3-Tier Web Application Infrastructure (Terraform)
 
-A simple, production-ready, and maintainable AWS 3-tier infrastructure deployment for an outsource client using Terraform. 
+A simple, production-ready, and maintainable AWS 3-tier infrastructure deployment for an outsource client using Terraform.
 
-This repository provisions an internet-facing **Application Load Balancer (ALB)**, an **EC2 Auto Scaling Group (ASG)** running containerized application services pulled from **AWS ECR** across private subnets, and an isolated **Multi-AZ RDS PostgreSQL** database tier, backed by remote state management using **Amazon S3** with **native state locking** (`use_lockfile = true`, eliminating the need for DynamoDB).
+This repository provisions an edge-cached **CloudFront CDN + S3** static frontend, an internet-facing **Application Load Balancer (ALB)**, an **EC2 Auto Scaling Group (ASG)** running containerized backend services pulled from a private **AWS ECR** repository across private subnets, and an isolated **Multi-AZ RDS PostgreSQL** database tier, backed by remote state management using **Amazon S3** with **native state locking** (`use_lockfile = true`, eliminating the need for DynamoDB).
 
 ---
 
@@ -17,7 +17,12 @@ flowchart TD
     subgraph AWS["AWS Cloud (VPC: 10.0.0.0/16 across 2 Availability Zones)"]
         IGW["Internet Gateway (IGW)"]
 
-        subgraph Tier1["Tier 1: Presentation / Public Subnets"]
+        subgraph Edge["Edge & Presentation Tier"]
+            CF["AWS CloudFront CDN (Global Edge)"]
+            S3_Frontend["Private S3 Bucket (Frontend SPA Assets - OAC)"]
+        end
+
+        subgraph Tier1["Tier 1: Ingress / Public Subnets"]
             subgraph AZ1_Pub["AZ-a (10.0.1.0/24)"]
                 ALB_A["ALB Node A"]
                 NAT_A["NAT Gateway A"]
@@ -48,16 +53,19 @@ flowchart TD
         end
 
         subgraph Supporting["Supporting AWS Services"]
-            ECR["AWS ECR (Docker Repositories)"]
+            ECR["AWS ECR (Private Container Registry)"]
             SSM["AWS SSM Session Manager (No SSH Port 22)"]
             S3_Backend["S3 Remote State Bucket (Native S3 State Locking)"]
-            SM["AWS Secrets Manager / KMS"]
+            SM["AWS Secrets Manager (DB Credentials)"]
         end
     end
 
-    Users -->|HTTPS 443 / HTTP 80| IGW
+    Users -->|HTTPS 443| CF
+    CF -->|Static Assets /* via OAC| S3_Frontend
+    CF -->|API Traffic /api/* & /static/*| ALB_A & ALB_B
+    Users -.->|Direct HTTP/HTTPS Option| IGW
     IGW --> ALB_A & ALB_B
-    ALB_A & ALB_B -->|Port 80/8080 Target Group| EC2_1 & EC2_2
+    ALB_A & ALB_B -->|Port 8000 Target Group| EC2_1 & EC2_2
     EC2_1 & EC2_2 -->|Egress via NAT| ECR
     EC2_1 & EC2_2 -->|Egress via NAT| SSM
     EC2_1 & EC2_2 -->|Port 5432 (Chained SG)| RDS_Primary
@@ -68,345 +76,372 @@ flowchart TD
 
 | Subnet Tier | CIDR Blocks (Example) | Route Target | Components | Public Access |
 |-------------|-----------------------|--------------|------------|---------------|
-| **Public Subnets** | `10.0.1.0/24`, `10.0.2.0/24` | Internet Gateway (`igw-*`) | ALB, NAT Gateways | Yes (Direct Internet) |
+| **Public Subnets** | `10.0.1.0/24`, `10.0.2.0/24` | Internet Gateway (`igw-*`) | ALB, NAT Gateway(s) | Yes (Direct Internet) |
 | **Private App Subnets** | `10.0.11.0/24`, `10.0.12.0/24` | NAT Gateway (`nat-*`) | EC2 Auto Scaling Group (Docker) | Egress only (No Public IP) |
 | **Private DB Subnets** | `10.0.21.0/24`, `10.0.22.0/24` | Local VPC Only (No IGW / No NAT) | Multi-AZ RDS PostgreSQL | None (Completely Isolated) |
 
 ---
 
-## 📂 2. Recommended Terraform Folder Directory Structure
+## 📂 2. Actual Project Directory Structure
+
+Unlike complex over-engineered multi-folder setups, this project is organized directly inside `terraform/` with cohesive single-responsibility files:
 
 ```text
-terraform/
-├── README.md                            # Documentation and deployment runbook
-│
-├── bootstrap/                           # Phase 1: One-time setup for remote state backend
-│   ├── main.tf                          # S3 bucket (versioning, encryption, public access block)
-│   ├── variables.tf                     # Bucket naming and target AWS region
-│   ├── outputs.tf                       # Exports state bucket name
-│   └── terraform.tfvars                 # Project prefix and region variables
-│
-├── modules/                             # Reusable, modular building blocks
-│   │
-│   ├── vpc/                             # Networking module
-│   │   ├── main.tf                      # VPC, Subnets (Public, Private App, Private DB), IGW, NAT GW, Route Tables
-│   │   ├── variables.tf                 # CIDRs, AZs, single_nat_gateway flag
-│   │   └── outputs.tf                   # vpc_id, public_subnets, private_app_subnets, db_subnets
-│   │
-│   ├── security/                        # Security Groups module (chained rules)
-│   │   ├── main.tf                      # ALB SG, EC2 App SG, RDS DB SG definitions
-│   │   ├── variables.tf                 # vpc_id, application_port, database_port
-│   │   └── outputs.tf                   # alb_sg_id, app_sg_id, db_sg_id
-│   │
-│   ├── ecr/                             # Container Registry module
-│   │   ├── main.tf                      # ECR repository, lifecycle policy, vulnerability scanning
-│   │   ├── variables.tf                 # repository_name, image_retention_count
-│   │   └── outputs.tf                   # repository_url, repository_arn
-│   │
-│   ├── alb/                             # Application Load Balancer module
-│   │   ├── main.tf                      # ALB, Target Group, HTTP/HTTPS Listeners, Health Checks
-│   │   ├── variables.tf                 # vpc_id, public_subnet_ids, security_group_id, health_check_path
-│   │   └── outputs.tf                   # alb_dns_name, alb_arn, target_group_arn
-│   │
-│   ├── asg/                             # Compute / Auto Scaling module
-│   │   ├── main.tf                      # Launch Template, IAM Instance Profile (SSM + ECR), ASG (Min: 2, Max: 4)
-│   │   ├── variables.tf                 # instance_type, min/max/desired size, subnet_ids, target_group_arn
-│   │   ├── outputs.tf                   # asg_name, asg_arn, iam_role_name
-│   │   └── templates/
-│   │       └── user_data.sh.tpl         # Cloud-init: installs Docker, authenticates to ECR, pulls image & runs container
-│   │
-│   └── rds/                             # Multi-AZ Database module
-│       ├── main.tf                      # DB Subnet Group, RDS Instance (Multi-AZ, KMS encrypted), Secrets Manager
-│       ├── variables.tf                 # engine, engine_version, instance_class, db_name, subnet_ids, db_sg_id
-│       └── outputs.tf                   # db_endpoint, db_name, db_secret_arn
-│
-└── environments/                        # Environment-specific root configurations
-    ├── dev/                             # Development / Staging environment
-    │   ├── backend.tf                   # Remote S3 backend configuration (key: dev/terraform.tfstate)
-    │   ├── providers.tf                 # AWS provider configuration & default tags
-    │   ├── main.tf                      # Root module instantiating modules with dev sizing
-    │   ├── variables.tf                 # Environment input variable declarations
-    │   ├── terraform.tfvars             # Dev values (e.g., single NAT, t3.micro, db.t4g.micro)
-    │   └── outputs.tf                   # Outputs: ALB DNS URL, ECR URL, RDS Endpoint
-    │
-    └── prod/                            # Production environment
-        ├── backend.tf                   # Remote S3 backend configuration (key: prod/terraform.tfstate)
-        ├── providers.tf                 # AWS provider configuration & default tags
-        ├── main.tf                      # Root module instantiating modules with prod sizing
-        ├── variables.tf                 # Environment input variable declarations
-        ├── terraform.tfvars             # Production values (multi-AZ, 2 NAT GWs, t3.small, db.t4g.small)
-        └── outputs.tf                   # Outputs: ALB DNS URL, ECR URL, RDS Endpoint
+food-order-3tier-aws/
+├── backend/                             # FastAPI backend application & Dockerfile
+├── frontend/                            # React + Vite frontend SPA application
+├── scripts/                             # Host deployment & rollback helper scripts
+├── terraform/                           # Terraform Infrastructure Root
+│   ├── main.tf                          # Provider config, S3 backend (use_lockfile), default tags
+│   ├── variables.tf                     # Input variables with validation and sensible defaults
+│   ├── outputs.tf                       # Exports endpoints, URLs, ARNs, and IDs
+│   ├── terraform.tfvars.example         # Example configuration parameters
+│   ├── vpc.tf                           # VPC, Subnets across 2 AZs, IGW, NAT Gateway, Route Tables
+│   ├── security_groups.tf               # Chained security groups (Internet -> ALB -> App -> RDS)
+│   ├── alb.tf                           # Application Load Balancer, Target Group & Health Check, Listener
+│   ├── asg.tf                           # Launch Template (IMDSv2, SSM), Auto Scaling Group, Cloud-init
+│   ├── ecr.tf                           # AWS ECR container registry, vulnerability scanning & lifecycle
+│   ├── rds.tf                           # Multi-AZ RDS PostgreSQL, DB Subnet Group, Secrets Manager
+│   └── frontend.tf                      # S3 static website bucket (OAC) + CloudFront CDN distribution
+└── README.md                            # Comprehensive runbook and architecture documentation
 ```
 
 ---
 
 ## 🔍 3. Purpose & Breakdown of Each File
 
-### A. Remote State Bootstrap (`terraform/bootstrap/`)
-> [!IMPORTANT]
-> **The State Dependency Dilemma**: You cannot configure an S3 backend inside Terraform before that S3 bucket exists. The `bootstrap/` folder solves this by running first with local state to provision the remote backend bucket.
->
-> **Modern State Locking (Terraform >= 1.10)**: Amazon S3 natively supports state locking using S3 conditional writes. A DynamoDB table is **no longer required**! Simply specify `use_lockfile = true` in your S3 backend configuration. When Terraform runs an operation, it conditionally creates a `.tflock` file directly in the S3 bucket to prevent concurrent executions, and automatically removes it upon completion.
+### 1. Provider & Remote State (`terraform/main.tf`)
+- **Terraform Version Requirement**: Enforces `required_version = ">= 1.10.0"` to support **native S3 state locking**.
+- **Remote State Backend**: Configures the `s3` backend with `use_lockfile = true` and `encrypt = true`. Terraform uses S3 conditional writes (`PutObject` with conditional checks) to create `.tflock` files, completely eliminating the cost and complexity of a separate DynamoDB table.
+- **Provider & Default Tags**: Enforces standard organizational tags (`Project`, `Environment`, `ManagedBy`, `Tier`) across all AWS resources.
 
-- **`bootstrap/main.tf`**:
-  - `aws_s3_bucket`: Dedicated S3 bucket for storing `.tfstate` files and native state lock files (`.tflock`).
-  - `aws_s3_bucket_versioning`: Protects against accidental state deletion or corruption by maintaining a version history of every state file (recommended for S3 native locking).
-  - `aws_s3_bucket_server_side_encryption_configuration`: Enforces AES-256 or AWS KMS encryption at rest (state files can contain sensitive resource metadata).
-  - `aws_s3_bucket_public_access_block`: Blocks all public ACLs and bucket policies.
-- **`bootstrap/variables.tf` & `terraform.tfvars`**: Declares and assigns the bucket prefix and target AWS region.
-- **`bootstrap/outputs.tf`**: Outputs the bucket name to copy into backend configuration files.
+### 2. Networking Tier (`terraform/vpc.tf`)
+- **`aws_vpc`**: Provisions a dedicated VPC (`10.0.0.0/16`) with DNS support and DNS hostnames enabled.
+- **Subnets across 2 Availability Zones**:
+  - `aws_subnet.public` (x2): Host the ALB and NAT Gateway.
+  - `aws_subnet.private_app` (x2): Host EC2 Auto Scaling instances without public IPs.
+  - `aws_subnet.private_db` (x2): Host Multi-AZ RDS PostgreSQL instances without internet routes.
+- **Gateways & Routing**:
+  - `aws_internet_gateway`: Inbound/outbound internet for public subnets.
+  - `aws_nat_gateway` + `aws_eip`: Secure outbound egress for private EC2 instances (pulling ECR images, SSM connectivity, package updates).
+  - Isolated database route tables with **no** route to the internet.
 
----
+### 3. Security Groups (`terraform/security_groups.tf`)
+Enforces strict least-privilege **Security Group Chaining**:
+- **ALB Security Group**: Allows ingress on port `80` (HTTP) from `0.0.0.0/0`.
+- **EC2 App Security Group**: Allows ingress on port `8000` **only** from the ALB Security Group using `security_groups = [aws_security_group.alb.id]`. No direct public access. Egress allows `0.0.0.0/0` for outbound NAT connectivity.
+- **RDS DB Security Group**: Allows ingress on port `5432` (PostgreSQL) **only** from the EC2 App Security Group using `security_groups = [aws_security_group.app.id]`. Completely unreachable from the internet or ALB.
 
-### B. Infrastructure Modules (`terraform/modules/`)
+### 4. Container Registry (`terraform/ecr.tf`)
+- **`aws_ecr_repository`**: Dedicated private Docker registry for storing backend API application images.
+  - Image vulnerability scan-on-push enabled (`scan_on_push = true`).
+  - Server-side AES-256 encryption enabled.
+  - `force_delete = true` allows clean teardown during testing.
+- **`aws_ecr_lifecycle_policy`**:
+  - Automatically expires untagged images older than 14 days.
+  - Retains only the last 30 tagged production images to optimize storage costs.
 
-#### 1. Networking (`modules/vpc/`)
-- **`main.tf`**:
-  - `aws_vpc`: Sets up a VPC (default `10.0.0.0/16`) with DNS support and DNS hostnames enabled.
-  - `aws_subnet` (Public x2): Spread across 2 Availability Zones for the ALB and NAT Gateways.
-  - `aws_subnet` (Private App x2): Spread across 2 Availability Zones for EC2 Auto Scaling instances.
-  - `aws_subnet` (Private DB x2): Spread across 2 Availability Zones for isolated database workloads.
-  - `aws_internet_gateway`: Provides inbound/outbound connectivity for public subnets.
-  - `aws_nat_gateway` & `aws_eip`: Provides outbound internet connectivity for private EC2 instances. Configurable via `enable_single_nat_gateway` to save costs in dev.
-  - `aws_route_table` & associations:
-    - Public subnets route `0.0.0.0/0` to the Internet Gateway.
-    - Private app subnets route `0.0.0.0/0` to the NAT Gateway(s).
-    - Database subnets have **no** default `0.0.0.0/0` route, keeping them completely unreachable from the outside.
-- **`variables.tf`**: Input CIDRs, AZ list, and NAT gateway redundancy flags.
-- **`outputs.tf`**: Exports `vpc_id`, `public_subnet_ids`, `private_app_subnet_ids`, and `db_subnet_ids`.
+### 5. Load Balancer (`terraform/alb.tf`)
+- **`aws_lb`**: Internet-facing Application Load Balancer deployed across the 2 public subnets.
+- **`aws_lb_target_group`**: Directs traffic to EC2 instances on port `8000`. Configured with HTTP health checks (`/api/v1`), healthy threshold (3), interval (30s), and timeout (5s).
+- **`aws_lb_listener`**: Listens on port `80` and forwards traffic to the target group.
 
-#### 2. Security Groups (`modules/security/`)
-- **`main.tf`**:
-  - **ALB Security Group**: Allows ingress on port `80` (HTTP) and `443` (HTTPS) from `0.0.0.0/0`. Restricts outbound egress to the EC2 App Security Group.
-  - **EC2 App Security Group**: Allows ingress **only** from the ALB Security Group on the target application port (e.g., `80` or `8080`). No direct public ingress. Egress allows `0.0.0.0/0` to access the NAT Gateway for ECR and SSM.
-  - **RDS DB Security Group**: Allows ingress on database port `5432` (PostgreSQL) or `3306` (MySQL) **only** from the EC2 App Security Group using `source_security_group_id`. No direct access from the internet or ALB.
-- **`variables.tf` & `outputs.tf`**: Takes `vpc_id` and application ports; exports the created Security Group IDs.
+### 6. Compute & Auto Scaling (`terraform/asg.tf`)
+- **IAM Instance Profile**:
+  - `AmazonSSMManagedInstanceCore`: AWS Systems Manager Session Manager access (secure shell without open SSH port 22 or key pairs).
+  - `AmazonEC2ContainerRegistryReadOnly`: Allows EC2 instances to pull Docker images directly from ECR.
+- **Launch Template**:
+  - Amazon Linux 2023 AMI.
+  - Enforces **IMDSv2** (`http_tokens = "required"`, `http_put_response_hop_limit = 1`) for cloud security compliance.
+  - Cloud-init user data installs Docker Engine and AWS CLI.
+  - Graceful Startup Sequence: Attempts to pull `$ECR_URL:$IMAGE_TAG`. If the image is not yet pushed to ECR (e.g. during first-time infrastructure provisioning), it automatically starts a lightweight placeholder container (`nginxdemos/hello:latest`) so ALB health checks pass and instances remain healthy.
+- **Auto Scaling Group**:
+  - Deploys across the 2 private application subnets.
+  - Integrated with ALB target group (`health_check_type = "ELB"`).
+  - `instance_refresh`: Rolling zero-downtime recycling when launch template or image updates occur.
 
-#### 3. Container Registry (`modules/ecr/`)
-- **`main.tf`**:
-  - `aws_ecr_repository`: Private Docker registry for storing backend and frontend images.
-  - `aws_ecr_lifecycle_policy`: Automatically purges untagged images and retains only the last 15 images to prevent unnecessary storage costs.
-  - `image_scanning_configuration`: Enables scan-on-push for automatic container vulnerability discovery.
-- **`variables.tf` & `outputs.tf`**: Configures repository name; exports the repository URL for build pipelines and EC2 user data.
+### 7. Database Tier (`terraform/rds.tf`)
+- **`aws_db_subnet_group`**: Groups private DB subnets across 2 AZs.
+- **`random_password`**: Generates a high-entropy 20-character database password automatically.
+- **`aws_secretsmanager_secret` & version**: Securely stores the generated DB password, username, host, and port in AWS Secrets Manager.
+- **`aws_db_instance`**:
+  - Engine: PostgreSQL (15.7).
+  - `multi_az = true`: High availability with synchronous standby replica in second AZ.
+  - Storage encryption enabled via AWS KMS.
+  - `publicly_accessible = false`: Completely isolated inside private DB subnets.
+  - `deletion_protection = false` by default for easy lab deployment (enable in production).
 
-#### 4. Load Balancer (`modules/alb/`)
-- **`main.tf`**:
-  - `aws_lb`: Internet-facing Application Load Balancer deployed across public subnets.
-  - `aws_lb_target_group`: Target group configured with HTTP health checks (`/api/v1` or `/`), healthy threshold (3), interval (30s), and timeout (5s).
-  - `aws_lb_listener`: Listens on HTTP port 80 (or HTTPS 443 with ACM certificate) and forwards traffic to the Target Group.
-- **`variables.tf` & `outputs.tf`**: Takes VPC, public subnets, and SG; exports `alb_dns_name` and `target_group_arn`.
+### 8. Frontend Static Hosting & CDN (`terraform/frontend.tf`)
+- **`aws_s3_bucket`**: Private S3 bucket hosting React SPA static assets. Public access is 100% blocked.
+- **Origin Access Control (OAC)**: Enforces SigV4 authentication so the bucket is accessible **only** through CloudFront.
+- **`aws_cloudfront_distribution`**:
+  - Global edge caching for static assets.
+  - Custom error responses (`403` / `404` mapped to `/index.html` with HTTP 200) to support client-side React Router navigation.
+  - Unified routing: Routes `/api/*` and `/static/*` directly to the ALB origin, eliminating CORS issues and browser mixed-content warnings.
 
-#### 5. Compute & Auto Scaling (`modules/asg/`)
-- **`main.tf`**:
-  - `aws_iam_role` & `aws_iam_instance_profile`: Attaches:
-    - `AmazonSSMManagedInstanceCore`: Enables AWS Systems Manager Session Manager (secure terminal access without open SSH port 22 or bastion hosts).
-    - `AmazonEC2ContainerRegistryReadOnly`: Allows EC2 instances to authenticate and pull Docker images from AWS ECR.
-  - `aws_launch_template`:
-    - Specifies AMI (Amazon Linux 2023 or Ubuntu 22.04 LTS) and EC2 instance type.
-    - Enforces **IMDSv2** (`http_tokens = "required"`, `http_put_response_hop_limit = 1`) for cloud security compliance.
-    - Injects base64-encoded `user_data.sh.tpl`.
-  - `aws_autoscaling_group`:
-    - Configured with `min_size = 2`, `max_size = 4`, and `desired_capacity = 2`.
-    - Spans the 2 private app subnets across distinct AZs for high availability.
-    - Integrated with the ALB target group using `health_check_type = "ELB"` and `health_check_grace_period = 300`.
-    - `instance_refresh`: Automatically performs rolling zero-downtime instance recycling whenever the Launch Template changes (e.g. updating container versions).
-- **`templates/user_data.sh.tpl`**:
-  - Startup cloud-init script:
-    1. Installs Docker Engine and AWS CLI.
-    2. Logs into AWS ECR using instance IAM credentials (`aws ecr get-login-password`).
-    3. Pulls application image(s) from ECR.
-    4. Runs container(s) with restart policies and binds application ports.
-- **`variables.tf` & `outputs.tf`**: Manages instance sizing, capacity limits, and exports the ASG name.
-
-#### 6. Database (`modules/rds/`)
-- **`main.tf`**:
-  - `aws_db_subnet_group`: Groups the private DB subnets across 2 AZs.
-  - `random_password`: Generates a high-entropy master database password automatically.
-  - `aws_secretsmanager_secret` & version: Stores the generated database credentials securely in AWS Secrets Manager.
-  - `aws_db_instance`:
-    - Engine: PostgreSQL (e.g., version 15) or MySQL (version 8.0).
-    - `multi_az = true`: Provisions an active primary in AZ-a and a synchronous standby replica in AZ-b with automatic failover.
-    - `storage_encrypted = true`: Enables KMS storage encryption at rest.
-    - `publicly_accessible = false`: Completely isolated from the internet.
-    - `deletion_protection = true` & `skip_final_snapshot = false`: Production safety guardrails.
-- **`variables.tf` & `outputs.tf`**: Configures database engine, instance sizing, and exports the RDS endpoint and secret ARN.
-
----
-
-### C. Environments (`terraform/environments/dev/` and `prod/` or `terraform/`)
-
-- **`backend.tf` / `main.tf`**: Connects to the remote state with **native S3 state locking**:
-  ```hcl
-  terraform {
-    required_version = ">= 1.10.0"
-
-    backend "s3" {
-      bucket       = "client-project-tfstate-123456789012"
-      key          = "prod/terraform.tfstate"  # Or "networking/terraform.tfstate"
-      region       = "us-east-1"
-      encrypt      = true
-      use_lockfile = true  # Native S3 state locking (Terraform >= 1.10, eliminates DynamoDB)
-    }
-  }
-  ```
-- **`providers.tf`**: Configures the AWS provider and enforces **Default Tags** across all resources:
-  ```hcl
-  provider "aws" {
-    region = var.aws_region
-
-    default_tags {
-      tags = {
-        Project     = "FoodOrderingApp"
-        Environment = var.environment
-        ManagedBy   = "Terraform"
-      }
-    }
-  }
-  ```
-- **`main.tf`**: The orchestrator root module calling `vpc`, `security`, `ecr`, `alb`, `asg`, and `rds`, wiring module outputs into downstream module inputs.
-- **`variables.tf`**: Declares variable names and types for that specific environment.
-- **`terraform.tfvars`**: Concrete parameters:
-  - **Dev**: `instance_type = "t3.micro"`, `single_nat_gateway = true`, `multi_az_rds = false` (cost-optimized).
-  - **Prod**: `instance_type = "t3.small"`, `single_nat_gateway = false` (2 NAT GWs across AZs), `multi_az_rds = true` (fault-tolerant).
-- **`outputs.tf`**: Displays the final ALB DNS URL, ECR registry URL, and RDS host.
+### 9. Variables & Outputs (`terraform/variables.tf`, `outputs.tf`)
+- Fully parameterized with sensible defaults for quick deployment.
+- Exports all essential URLs, ARNs, DNS names, and credentials needed for CI/CD and verification.
 
 ---
 
 ## 🚀 4. Step-by-Step Deployment Runbook
 
-### Phase 1: Deploy Remote State Backend (One-Time Setup)
+Follow this guide to deploy the entire stack from scratch.
 
-Terraform 1.10+ supports native S3 state locking using S3 conditional writes, eliminating the need to create or manage a separate DynamoDB table.
+### Prerequisites
 
-You can provision your remote state S3 bucket using either the AWS CLI or Terraform bootstrap:
+Ensure you have the following installed and configured on your machine:
+- **AWS CLI v2** configured with administrator credentials (`aws configure`)
+- **Terraform >= 1.10.0** (`terraform version`)
+- **Docker Engine** running locally (`docker version`)
+- **Node.js >= 18** and **npm** (`node -v`)
 
-#### Option A: Quick Setup via AWS CLI
+Verify your AWS identity:
 ```bash
-# 1. Create S3 bucket (ap-southeast-1 example; adjust region as needed)
-aws s3api create-bucket \
-  --bucket <your-unique-tfstate-bucket> \
-  --region ap-southeast-1 \
-  --create-bucket-configuration LocationConstraint=ap-southeast-1
+aws sts get-caller-identity
+```
 
-# 2. Enable Bucket Versioning (recommended for state recovery and lock consistency)
+---
+
+### Step 1: Bootstrap the S3 Remote State Bucket (One-Time Setup)
+
+Terraform 1.10+ uses native S3 state locking via S3 conditional writes. **No DynamoDB table is needed.**
+
+Choose your AWS region (e.g., `ap-southeast-1`) and a globally unique bucket name:
+
+```bash
+STATE_BUCKET="food-order-tfstate-$(aws sts get-caller-identity --query Account --output text)-ap-southeast-1"
+AWS_REGION="ap-southeast-1"
+
+# 1. Create S3 bucket (ap-southeast-1 example)
+aws s3api create-bucket \
+  --bucket "$STATE_BUCKET" \
+  --region "$AWS_REGION" \
+  --create-bucket-configuration LocationConstraint="$AWS_REGION"
+
+# 2. Enable Bucket Versioning (essential for state history and native state locking)
 aws s3api put-bucket-versioning \
-  --bucket <your-unique-tfstate-bucket> \
+  --bucket "$STATE_BUCKET" \
   --versioning-configuration Status=Enabled
 
 # 3. Enable Default SSE-S3 Encryption (AES256)
 aws s3api put-bucket-encryption \
-  --bucket <your-unique-tfstate-bucket> \
+  --bucket "$STATE_BUCKET" \
   --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 
-# 4. Block All Public Access
+# 4. Block all public access
 aws s3api put-public-access-block \
-  --bucket <your-unique-tfstate-bucket> \
+  --bucket "$STATE_BUCKET" \
   --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+
+echo "State bucket created: $STATE_BUCKET"
 ```
 
-#### Option B: Setup via Terraform Bootstrap
-```bash
-cd terraform/bootstrap
+---
 
-# Initialize and create S3 state bucket
+### Step 2: Configure Terraform Backend & Variables
+
+1. Open `terraform/main.tf` and update the `bucket` attribute in the `backend "s3"` block to match your bucket name:
+
+```hcl
+terraform {
+  required_version = ">= 1.10.0"
+
+  backend "s3" {
+    bucket       = "food-order-tfstate-<YOUR_ACCOUNT_ID>-ap-southeast-1"
+    key          = "networking/terraform.tfstate"
+    region       = "ap-southeast-1"
+    encrypt      = true
+    use_lockfile = true # Native S3 state locking
+  }
+}
+```
+
+2. Create your `terraform.tfvars` from the example template:
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Review `terraform.tfvars`. The defaults are pre-configured to work out of the box with `ecr_repository_url = ""` (which automatically links the newly provisioned ECR registry).
+
+---
+
+### Step 3: Provision AWS Infrastructure via Terraform
+
+From inside the `terraform/` directory:
+
+```bash
+# 1. Initialize Terraform with S3 remote state and native locking
 terraform init
-terraform plan -out=tfplan
-terraform apply tfplan
 
-# Note the output bucket name
-```
+# 2. Validate configuration
+terraform validate
 
-Update your backend configuration (e.g., `terraform/main.tf` or `environments/*/backend.tf`) with your S3 bucket name. With `use_lockfile = true`, Terraform manages locks natively in S3 without DynamoDB.
-
----
-
-### Phase 2: Build & Push Docker Image to ECR
-
-Before the EC2 instances launch, build and push your application image to ECR so the instances can pull the container on boot:
-
-```bash
-# Authenticate local Docker daemon to AWS ECR
-aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account_id>.dkr.ecr.<region>.amazonaws.com
-
-# Build and tag application image
-docker build -t <account_id>.dkr.ecr.<region>.amazonaws.com/food-order-api:latest ./backend
-
-# Push image
-docker push <account_id>.dkr.ecr.<region>.amazonaws.com/food-order-api:latest
-```
-
----
-
-### Phase 3: Deploy the 3-Tier Infrastructure
-
-```bash
-cd terraform   # Or cd terraform/environments/dev if using environment subdirectories
-
-# Initialize with remote S3 backend and native S3 state locking
-terraform init
-
-# Review changes
+# 3. Review planned resources
 terraform plan -out=tfplan
 
-# Apply infrastructure
+# 4. Apply infrastructure
 terraform apply tfplan
 ```
 
+> [!NOTE]
+> RDS PostgreSQL provisioning takes approximately 5–10 minutes. 
+> When complete, Terraform outputs all key endpoints, including `alb_dns_name`, `ecr_repository_url`, `frontend_bucket_name`, and `cloudfront_domain_name`.
+> The EC2 instances boot and start a placeholder hello container so ALB health checks pass while waiting for the application container image.
+
 ---
 
-### Phase 4: Verification & Operations
+### Step 4: Build & Push Backend Application Container to ECR
 
-1. **Verify Web Traffic**:
-   Copy the `alb_dns_url` from the Terraform outputs and verify in your browser or via curl:
-   ```bash
-   curl -I http://<alb-dns-name>/api/v1
-   ```
-2. **Access Instances via AWS Systems Manager (No SSH Key needed)**:
-   ```bash
-   # List active instances in the ASG
-   aws ec2 describe-instances --filters "Name=tag:aws:autoscaling:groupName,Values=<asg-name>" --query "Reservations[*].Instances[*].InstanceId" --output text
+Once Terraform creates the ECR repository, build and push your backend Docker image:
 
-   # Start an interactive shell session without port 22 open
-   aws ssm start-session --target <instance-id>
+```bash
+# Export outputs for convenient CLI use
+ECR_URL=$(terraform output -raw ecr_repository_url)
+AWS_REGION=$(terraform output -raw aws_region)
+ASG_NAME=$(terraform output -raw asg_name)
+
+echo "ECR Repository: $ECR_URL"
+
+# 1. Authenticate Docker to AWS ECR
+aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_URL"
+
+# 2. Build and tag the backend container image
+cd ../backend
+docker build -t "$ECR_URL:latest" .
+
+# 3. Push image to ECR
+docker push "$ECR_URL:latest"
+
+# 4. Trigger ASG Instance Refresh to deploy the new container to EC2 instances
+aws autoscaling start-instance-refresh \
+  --region "$AWS_REGION" \
+  --auto-scaling-group-name "$ASG_NAME" \
+  --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 180}'
+
+echo "Backend image deployed. Instance refresh in progress..."
+```
+
+---
+
+### Step 5: Build & Deploy Frontend SPA to S3 + CloudFront
+
+Deploy the React frontend static build to the S3 bucket with CloudFront CDN distribution:
+
+```bash
+# Navigate to frontend directory
+cd ../frontend
+
+# 1. Install dependencies and build static assets
+npm install
+npm run build
+
+# 2. Return to terraform directory to query bucket & CloudFront ID
+cd ../terraform
+FRONTEND_BUCKET=$(terraform output -raw frontend_bucket_name)
+CLOUDFRONT_ID=$(terraform output -raw cloudfront_distribution_id)
+
+# 3. Sync static files to the private S3 bucket
+aws s3 sync ../frontend/dist/ "s3://$FRONTEND_BUCKET" --delete
+
+# 4. Invalidate CloudFront cache so changes take effect globally
+aws cloudfront create-invalidation \
+  --distribution-id "$CLOUDFRONT_ID" \
+  --paths "/*"
+
+echo "Frontend deployed successfully!"
+```
+
+---
+
+### Step 6: Verification & Operations
+
+1. **Access Frontend via CloudFront CDN**:
+   ```bash
+   terraform output frontend_url
+   # Example: https://d1234567890abc.cloudfront.net
    ```
+   Open the URL in your browser. The React application loads from CloudFront and automatically queries `/api/v1` via CloudFront's reverse proxy behavior to the ALB.
+
+2. **Verify ALB Health Check Directly**:
+   ```bash
+   ALB_URL=$(terraform output -raw alb_dns_name)
+   curl -I "http://$ALB_URL/api/v1"
+   ```
+
+3. **Retrieve Database Credentials Securely**:
+   DB credentials are never printed in plain text:
+   ```bash
+   SECRET_ARN=$(terraform output -raw rds_secret_arn)
+   aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" --query SecretString --output text | jq .
+   ```
+
+4. **Connect to EC2 Instances without SSH Key (AWS Systems Manager)**:
+   Because port 22 is disabled, connect to instances via SSM Session Manager:
+   ```bash
+   # Get Instance ID of a running app instance
+   INSTANCE_ID=$(aws ec2 describe-instances --region ap-southeast-1 \
+     --filters "Name=tag:aws:autoscaling:groupName,Values=$ASG_NAME" "Name=instance-state-name,Values=running" \
+     --query "Reservations[0].Instances[0].InstanceId" --output text)
+
+   # Start an interactive shell session
+   aws ssm start-session --target "$INSTANCE_ID" --region ap-southeast-1
+   ```
+
+   Once inside the instance, inspect running Docker containers:
+   ```bash
+   sudo docker ps
+   sudo docker logs food_api
+   ```
+
+---
+
+### Step 7: Teardown / Resource Destruction
+
+To avoid ongoing AWS charges, destroy the resources when finished:
+
+```bash
+cd terraform
+
+# 1. Empty the frontend S3 bucket (S3 cannot be deleted while containing files)
+FRONTEND_BUCKET=$(terraform output -raw frontend_bucket_name)
+aws s3 rm "s3://$FRONTEND_BUCKET" --recursive
+
+# 2. Run Terraform destroy
+terraform destroy -auto-approve
+```
 
 ---
 
 ## 🛡️ 5. Senior Cloud Engineer Best Practices & Guardrails
 
 1. **Security Group Chaining**:
-   Never use open CIDR blocks (`0.0.0.0/0`) between tiers. Ingress rules must reference `source_security_group_id`:
+   Never use open CIDR blocks (`0.0.0.0/0`) between tiers. Ingress rules strictly reference `source_security_group_id`:
    - ALB SG allows traffic from the internet (`0.0.0.0/0`).
    - App EC2 SG allows traffic **only** from the ALB SG.
    - RDS DB SG allows traffic **only** from the App EC2 SG.
 2. **Zero SSH / Bastionless Management**:
    Never create AWS key pairs or open port 22 in security groups. Using `AmazonSSMManagedInstanceCore` allows full CLI and console access through AWS Systems Manager, logged to CloudTrail.
 3. **IMDSv2 Enforcement**:
-   All Launch Templates configure `http_tokens = "required"` and `http_put_response_hop_limit = 1` to prevent SSRF vulnerabilities from accessing EC2 instance metadata.
-4. **Accidental Destruction Protection**:
-   Protect state and database resources from accidental deletion:
+   Launch Templates configure `http_tokens = "required"` and `http_put_response_hop_limit = 1` to prevent SSRF vulnerabilities from accessing EC2 instance metadata.
+4. **Native S3 State Locking (No DynamoDB Required)**:
+   - Starting with **Terraform 1.10+**, the `s3` backend natively supports distributed state locking via S3 conditional writes.
+   - Simply configure `use_lockfile = true` in the `backend "s3"` block.
+   - Terraform automatically writes and checks a `<state-key>.tflock` file directly in the S3 bucket using HTTP conditional requests (`If-None-Match`).
+   - **Key Advantages**:
+     - **Cost Optimization**: Eliminates the provisioned read/write capacity or per-request costs of DynamoDB.
+     - **Reduced Complexity**: Simplifies bootstrap infrastructure from two services (S3 + DynamoDB) down to just an S3 bucket.
+     - **Streamlined IAM Permissions**: Automation roles and CI/CD pipelines only need S3 permissions (`s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket`) on the state bucket, without requiring any `dynamodb:*` actions.
+     - **Deprecation Alignment**: `dynamodb_table` is deprecated starting in Terraform 1.11+.
+5. **Accidental Destruction Protection**:
+   Protect state and production database resources from accidental deletion with lifecycle rules:
    ```hcl
    lifecycle {
      prevent_destroy = true
    }
    ```
-5. **Cost vs High-Availability Optimization**:
-   - NAT Gateways cost ~$32/month each plus data processing fees.
-   - For **Development/Staging**, set `single_nat_gateway = true` to share 1 NAT Gateway across both AZs (saves ~$384/year).
-   - For **Production**, set `single_nat_gateway = false` so each AZ has its own independent NAT Gateway, ensuring complete AZ fault isolation.
 6. **Secrets Handling**:
-   Never commit `.tfvars` files containing plaintext passwords to version control. Passwords should be generated via Terraform `random_password`, stored in AWS Secrets Manager, and read by the application at startup.
-7. **Native S3 State Locking (No DynamoDB Required)**:
-   - Starting in **Terraform 1.10+**, the `s3` backend natively supports distributed state locking via S3 conditional writes.
-   - Configure `use_lockfile = true` in the `backend "s3"` block.
-   - Terraform automatically creates, verifies, and deletes a `<state-key>.tflock` file directly in the S3 bucket using S3 conditional write requests (`If-None-Match`), preventing concurrent modifications.
-   - **Key Advantages**:
-     - **Zero Additional Cost**: Eliminates DynamoDB capacity/request charges and table management overhead.
-     - **Simplified Bootstrap**: Only an S3 bucket with versioning is required—no need to provision or coordinate a separate DynamoDB table.
-     - **Streamlined IAM Permissions**: CI/CD and deployment roles only need S3 permissions (`s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket`) on the state bucket, without requiring any `dynamodb:*` actions.
-     - **Deprecation Alignment**: The legacy `dynamodb_table` argument was marked as deprecated starting in Terraform 1.11+.
-   - **Migration from DynamoDB**: To migrate an existing stack, remove `dynamodb_table`, add `use_lockfile = true`, and run:
-     ```bash
-     terraform init -migrate-state  # or terraform init -reconfigure
-     ```
-     Once initialized, you can safely retire the legacy DynamoDB lock table.
+   Never commit `.tfvars` files containing plaintext passwords to version control. Passwords are generated via Terraform `random_password`, stored in AWS Secrets Manager, and read by the application at startup.

@@ -122,10 +122,34 @@ variable "asg_desired_capacity" {
   default     = 2
 }
 
-variable "ecr_repository_url" {
-  description = "ECR Repository URL for the application Docker image (e.g. 123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/food-order-api)"
+variable "ecr_repository_name" {
+  description = "Custom name for the AWS ECR repository (leave blank to default to <project_name>-api)"
   type        = string
   default     = ""
+}
+
+variable "ecr_repository_url" {
+  description = "Override ECR Repository URL if referencing an existing registry (leave blank to use auto-provisioned ECR)"
+  type        = string
+  default     = ""
+}
+
+variable "ecr_force_delete" {
+  description = "If true, allows Terraform to destroy the ECR repository even if it contains images"
+  type        = bool
+  default     = true
+}
+
+variable "ecr_image_retention_days" {
+  description = "Days before untagged images are automatically deleted from ECR"
+  type        = number
+  default     = 14
+}
+
+variable "ecr_max_image_count" {
+  description = "Maximum number of tagged images to retain in ECR"
+  type        = number
+  default     = 30
 }
 
 variable "app_image_tag" {

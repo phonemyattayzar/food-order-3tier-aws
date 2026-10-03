@@ -32,7 +32,7 @@ terraform {
   # terraform init -backend-config="bucket=<your-bucket>" ...
   # ----------------------------------------------------------------------------
   backend "s3" {
-    bucket       = "food-order-tfstate-ap-southeast-1"
+    bucket       = "food-order-tfstate-051131628511-ap-southeast-1"
     key          = "networking/terraform.tfstate"
     region       = "ap-southeast-1"
     encrypt      = true

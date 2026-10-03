@@ -8,6 +8,11 @@
 # VPC & Subnet Outputs
 # ------------------------------------------------------------------------------
 
+output "aws_region" {
+  description = "AWS deployment region"
+  value       = var.aws_region
+}
+
 output "vpc_id" {
   description = "The ID of the primary VPC"
   value       = aws_vpc.this.id
@@ -141,6 +146,25 @@ output "rds_db_name" {
 output "rds_secret_arn" {
   description = "ARN of the Secrets Manager secret storing database credentials"
   value       = aws_secretsmanager_secret.db_credentials.arn
+}
+
+# ------------------------------------------------------------------------------
+# Container Registry Outputs (AWS ECR)
+# ------------------------------------------------------------------------------
+
+output "ecr_repository_url" {
+  description = "URL of the Amazon ECR repository for application container images"
+  value       = aws_ecr_repository.app.repository_url
+}
+
+output "ecr_repository_arn" {
+  description = "ARN of the Amazon ECR repository"
+  value       = aws_ecr_repository.app.arn
+}
+
+output "ecr_repository_name" {
+  description = "Name of the Amazon ECR repository"
+  value       = aws_ecr_repository.app.name
 }
 
 # ------------------------------------------------------------------------------

@@ -109,23 +109,30 @@ resource "aws_launch_template" "this" {
     usermod -aG docker ec2-user
 
     REGION="${var.aws_region}"
-    ECR_URL="${var.ecr_repository_url}"
+    ECR_URL="${var.ecr_repository_url != "" ? var.ecr_repository_url : aws_ecr_repository.app.repository_url}"
     IMAGE_TAG="${var.app_image_tag}"
     APP_PORT="${var.app_port}"
 
     if [ -n "$ECR_URL" ]; then
       echo "==> Authenticating Docker to AWS ECR..."
-      aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$ECR_URL"
+      aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$ECR_URL" || true
 
-      echo "==> Pulling application image: $ECR_URL:$IMAGE_TAG..."
-      docker pull "$ECR_URL:$IMAGE_TAG"
-
-      echo "==> Running application container on port $APP_PORT..."
-      docker run -d \
-        --name food_api \
-        --restart unless-stopped \
-        -p $APP_PORT:8000 \
-        "$ECR_URL:$IMAGE_TAG"
+      echo "==> Attempting to pull application image: $ECR_URL:$IMAGE_TAG..."
+      if docker pull "$ECR_URL:$IMAGE_TAG"; then
+        echo "==> Running application container on port $APP_PORT..."
+        docker run -d \
+          --name food_api \
+          --restart unless-stopped \
+          -p $APP_PORT:8000 \
+          "$ECR_URL:$IMAGE_TAG"
+      else
+        echo "==> Notice: Image not found in ECR yet. Starting placeholder container for health checks..."
+        docker run -d \
+          --name placeholder_api \
+          --restart unless-stopped \
+          -p $APP_PORT:80 \
+          nginxdemos/hello:latest
+      fi
     else
       echo "==> ECR URL not provided. Running lightweight health endpoint for testing..."
       docker run -d \
