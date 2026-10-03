@@ -53,9 +53,9 @@ resource "aws_db_instance" "this" {
   identifier = "${var.project_name}-${var.environment}-db"
 
   # Engine & Architecture
-  engine         = var.db_engine
-  engine_version = var.db_engine_version
-  instance_class = var.db_instance_class
+  engine                     = var.db_engine
+  engine_version             = var.db_engine_version
+  instance_class             = var.db_instance_class
   auto_minor_version_upgrade = true # Minor version များကို အလိုအလျောက် Update လုပ်ခွင့်ပေးခြင်း
 
   # Storage Configuration
@@ -78,7 +78,7 @@ resource "aws_db_instance" "this" {
 
   # Automated Backups & Maintenance
   # var.db_backup_retention_period
-  backup_retention_period   = 0 
+  backup_retention_period   = 0
   backup_window             = "03:00-04:00"
   maintenance_window        = "Mon:04:00-Mon:05:00"
   copy_tags_to_snapshot     = true

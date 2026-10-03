@@ -200,3 +200,33 @@ output "frontend_url" {
   description = "Primary HTTPS URL to access the deployed React frontend application"
   value       = "https://${aws_cloudfront_distribution.frontend.domain_name}"
 }
+
+# ------------------------------------------------------------------------------
+# Systems Manager (SSM) Parameter Store Outputs
+# ------------------------------------------------------------------------------
+
+output "ssm_parameter_prefix" {
+  description = "Base prefix for application parameters in AWS SSM Parameter Store"
+  value       = "/${var.project_name}/${var.environment}"
+}
+
+output "ssm_database_url_name" {
+  description = "Name of the SSM parameter storing the database connection URL"
+  value       = aws_ssm_parameter.database_url.name
+}
+
+output "ssm_database_url_arn" {
+  description = "ARN of the SSM parameter storing the database connection URL"
+  value       = aws_ssm_parameter.database_url.arn
+}
+
+output "ssm_secret_key_name" {
+  description = "Name of the SSM parameter storing the JWT secret key"
+  value       = aws_ssm_parameter.secret_key.name
+}
+
+output "ssm_secret_key_arn" {
+  description = "ARN of the SSM parameter storing the JWT secret key"
+  value       = aws_ssm_parameter.secret_key.arn
+}
+

@@ -253,3 +253,27 @@ variable "enable_alb_api_routing" {
   type        = bool
   default     = true
 }
+
+# ------------------------------------------------------------------------------
+# Backend Security & Authentication Variables (SSM Parameter Store)
+# ------------------------------------------------------------------------------
+
+variable "secret_key" {
+  description = "Backend JWT Secret Key (leave empty to generate automatically via random_password)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "jwt_algorithm" {
+  description = "Backend JWT signing algorithm"
+  type        = string
+  default     = "HS256"
+}
+
+variable "jwt_access_token_expire_minutes" {
+  description = "Backend JWT access token expiration duration in minutes"
+  type        = number
+  default     = 11520
+}
+

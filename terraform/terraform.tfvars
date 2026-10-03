@@ -47,3 +47,9 @@ frontend_bucket_name   = "" # Leave empty to auto-generate unique name
 frontend_force_destroy = true
 cloudfront_price_class = "PriceClass_100"
 enable_alb_api_routing = true
+
+# Backend Security & Authentication (SSM Parameter Store)
+secret_key                      = "" # Leave empty to automatically generate random 64-char key in SSM
+jwt_algorithm                   = "HS256"
+jwt_access_token_expire_minutes = 11520
+
