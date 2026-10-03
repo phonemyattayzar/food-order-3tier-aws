@@ -143,7 +143,8 @@ resource "aws_launch_template" "this" {
   # Cloud-init User Data Script: Installs Docker, fetches SSM parameters, and launches container
   user_data = base64encode(<<-EOF
     #!/bin/bash
-    set -euo pipefail
+    exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+    set -x
 
     echo "==> Updating packages and installing Docker & AWS CLI..."
     dnf update -y
@@ -160,56 +161,42 @@ resource "aws_launch_template" "this" {
 
     echo "==> Fetching application credentials from AWS SSM Parameter Store ($SSM_PREFIX)..."
 
-    fetch_ssm_param() {
+    get_ssm_val() {
       local param_name="$1"
-      local with_decrypt="$${2:-true}"
-      local value=""
-      local max_retries=10
-      local attempt=1
-
-      while [ $attempt -le $max_retries ]; do
-        if [ "$with_decrypt" = "true" ]; then
-          value=$(aws ssm get-parameter --name "$param_name" --with-decryption --region "$REGION" --query "Parameter.Value" --output text 2>/dev/null || true)
-        else
-          value=$(aws ssm get-parameter --name "$param_name" --region "$REGION" --query "Parameter.Value" --output text 2>/dev/null || true)
-        fi
-
-        if [ -n "$value" ] && [ "$value" != "None" ]; then
-          echo "$value"
-          return 0
-        fi
-
-        echo "==> Waiting for SSM parameter $param_name (attempt $attempt/$max_retries)..." >&2
-        sleep 3
-        attempt=$((attempt + 1))
-      done
-
-      echo "==> Error: Failed to fetch SSM parameter $param_name after $max_retries attempts." >&2
-      return 1
+      local decrypt="$${2:-true}"
+      if [ "$decrypt" = "true" ]; then
+        aws ssm get-parameter --name "$param_name" --with-decryption --region "$REGION" --query "Parameter.Value" --output text 2>/dev/null || echo ""
+      else
+        aws ssm get-parameter --name "$param_name" --region "$REGION" --query "Parameter.Value" --output text 2>/dev/null || echo ""
+      fi
     }
 
-    DATABASE_URL=$(fetch_ssm_param "$SSM_PREFIX/DATABASE_URL" true)
-    POSTGRES_USER=$(fetch_ssm_param "$SSM_PREFIX/POSTGRES_USER" false)
-    POSTGRES_PASSWORD=$(fetch_ssm_param "$SSM_PREFIX/POSTGRES_PASSWORD" true)
-    POSTGRES_DB=$(fetch_ssm_param "$SSM_PREFIX/POSTGRES_DB" false)
-    POSTGRES_HOST=$(fetch_ssm_param "$SSM_PREFIX/POSTGRES_HOST" false 2>/dev/null || true)
-    POSTGRES_PORT=$(fetch_ssm_param "$SSM_PREFIX/POSTGRES_PORT" false 2>/dev/null || echo "5432")
-    SECRET_KEY=$(fetch_ssm_param "$SSM_PREFIX/SECRET_KEY" true)
-    ALGORITHM=$(fetch_ssm_param "$SSM_PREFIX/ALGORITHM" false 2>/dev/null || echo "HS256")
-    ACCESS_TOKEN_EXPIRE_MINUTES=$(fetch_ssm_param "$SSM_PREFIX/ACCESS_TOKEN_EXPIRE_MINUTES" false 2>/dev/null || echo "11520")
+    DATABASE_URL=$(get_ssm_val "$SSM_PREFIX/DATABASE_URL" true)
+    POSTGRES_USER=$(get_ssm_val "$SSM_PREFIX/POSTGRES_USER" false)
+    POSTGRES_PASSWORD=$(get_ssm_val "$SSM_PREFIX/POSTGRES_PASSWORD" true)
+    POSTGRES_DB=$(get_ssm_val "$SSM_PREFIX/POSTGRES_DB" false)
+    POSTGRES_HOST=$(get_ssm_val "$SSM_PREFIX/POSTGRES_HOST" false)
+    POSTGRES_PORT=$(get_ssm_val "$SSM_PREFIX/POSTGRES_PORT" false)
+    SECRET_KEY=$(get_ssm_val "$SSM_PREFIX/SECRET_KEY" true)
+    ALGORITHM=$(get_ssm_val "$SSM_PREFIX/ALGORITHM" false)
+    ACCESS_TOKEN_EXPIRE_MINUTES=$(get_ssm_val "$SSM_PREFIX/ACCESS_TOKEN_EXPIRE_MINUTES" false)
 
-    echo "==> Storing application environment variables in $ENV_FILE..."
+    [ -z "$POSTGRES_PORT" ] && POSTGRES_PORT="5432"
+    [ -z "$ALGORITHM" ] && ALGORITHM="HS256"
+    [ -z "$ACCESS_TOKEN_EXPIRE_MINUTES" ] && ACCESS_TOKEN_EXPIRE_MINUTES="11520"
+
+    echo "==> Writing $ENV_FILE..."
     cat <<ENV > "$ENV_FILE"
-DATABASE_URL=$DATABASE_URL
-POSTGRES_USER=$POSTGRES_USER
-POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-POSTGRES_DB=$POSTGRES_DB
-POSTGRES_HOST=$POSTGRES_HOST
-POSTGRES_PORT=$POSTGRES_PORT
-SECRET_KEY=$SECRET_KEY
-ALGORITHM=$ALGORITHM
-ACCESS_TOKEN_EXPIRE_MINUTES=$ACCESS_TOKEN_EXPIRE_MINUTES
-ENV
+    DATABASE_URL=$DATABASE_URL
+    POSTGRES_USER=$POSTGRES_USER
+    POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+    POSTGRES_DB=$POSTGRES_DB
+    POSTGRES_HOST=$POSTGRES_HOST
+    POSTGRES_PORT=$POSTGRES_PORT
+    SECRET_KEY=$SECRET_KEY
+    ALGORITHM=$ALGORITHM
+    ACCESS_TOKEN_EXPIRE_MINUTES=$ACCESS_TOKEN_EXPIRE_MINUTES
+    ENV
     chmod 600 "$ENV_FILE"
 
     if [ -n "$ECR_URL" ]; then
@@ -218,41 +205,25 @@ ENV
 
       echo "==> Attempting to pull application image: $ECR_URL:$IMAGE_TAG..."
       if docker pull "$ECR_URL:$IMAGE_TAG"; then
-        echo "==> Running application container on port $APP_PORT with credentials..."
+        echo "==> Starting food_api container..."
         docker run -d \
           --name food_api \
           --restart unless-stopped \
           --env-file "$ENV_FILE" \
-          -e DATABASE_URL="$DATABASE_URL" \
-          -e POSTGRES_USER="$POSTGRES_USER" \
-          -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
-          -e POSTGRES_DB="$POSTGRES_DB" \
-          -e POSTGRES_HOST="$POSTGRES_HOST" \
-          -e POSTGRES_PORT="$POSTGRES_PORT" \
-          -e SECRET_KEY="$SECRET_KEY" \
-          -e ALGORITHM="$ALGORITHM" \
-          -e ACCESS_TOKEN_EXPIRE_MINUTES="$ACCESS_TOKEN_EXPIRE_MINUTES" \
-          -p $APP_PORT:8000 \
+          -p "$APP_PORT:8000" \
           "$ECR_URL:$IMAGE_TAG"
 
-        echo "==> Running database migrations inside container..."
+        echo "==> Running database migrations..."
         sleep 5
-        docker exec food_api alembic upgrade head || echo "==> Notice: Alembic migration completed or skipped."
+        docker exec food_api alembic upgrade head || echo "==> Migration check completed."
       else
-        echo "==> Notice: Image not found in ECR yet. Starting placeholder container for health checks..."
+        echo "==> Image not found in ECR yet. Starting placeholder container..."
         docker run -d \
           --name placeholder_api \
           --restart unless-stopped \
-          -p $APP_PORT:80 \
+          -p "$APP_PORT:80" \
           nginxdemos/hello:latest
       fi
-    else
-      echo "==> ECR URL not provided. Running lightweight health endpoint for testing..."
-      docker run -d \
-        --name placeholder_api \
-        --restart unless-stopped \
-        -p $APP_PORT:80 \
-        nginxdemos/hello:latest
     fi
 
     echo "==> Startup sequence completed successfully."
