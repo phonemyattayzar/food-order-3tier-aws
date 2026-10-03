@@ -143,7 +143,7 @@ resource "aws_launch_template" "this" {
   # Cloud-init User Data Script: Installs Docker, fetches SSM parameters, and launches container
   user_data = base64encode(<<-EOF
     #!/bin/bash
-    exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+    exec > /var/log/user-data.log 2>&1
     set -x
 
     echo "==> Updating packages and installing Docker & AWS CLI..."
@@ -159,27 +159,30 @@ resource "aws_launch_template" "this" {
     SSM_PREFIX="/${var.project_name}/${var.environment}"
     ENV_FILE="/etc/food_api.env"
 
+    echo "==> Waiting for AWS IAM credentials..."
+    for i in {1..15}; do
+      if aws sts get-caller-identity --region "$REGION" >/dev/null 2>&1; then
+        echo "==> AWS IAM credentials confirmed."
+        break
+      fi
+      sleep 2
+    done
+
     echo "==> Fetching application credentials from AWS SSM Parameter Store ($SSM_PREFIX)..."
 
     get_ssm_val() {
-      local param_name="$1"
-      local decrypt="$${2:-true}"
-      if [ "$decrypt" = "true" ]; then
-        aws ssm get-parameter --name "$param_name" --with-decryption --region "$REGION" --query "Parameter.Value" --output text 2>/dev/null || echo ""
-      else
-        aws ssm get-parameter --name "$param_name" --region "$REGION" --query "Parameter.Value" --output text 2>/dev/null || echo ""
-      fi
+      aws ssm get-parameter --name "$1" --with-decryption --region "$REGION" --query "Parameter.Value" --output text 2>/dev/null || echo ""
     }
 
-    DATABASE_URL=$(get_ssm_val "$SSM_PREFIX/DATABASE_URL" true)
-    POSTGRES_USER=$(get_ssm_val "$SSM_PREFIX/POSTGRES_USER" false)
-    POSTGRES_PASSWORD=$(get_ssm_val "$SSM_PREFIX/POSTGRES_PASSWORD" true)
-    POSTGRES_DB=$(get_ssm_val "$SSM_PREFIX/POSTGRES_DB" false)
-    POSTGRES_HOST=$(get_ssm_val "$SSM_PREFIX/POSTGRES_HOST" false)
-    POSTGRES_PORT=$(get_ssm_val "$SSM_PREFIX/POSTGRES_PORT" false)
-    SECRET_KEY=$(get_ssm_val "$SSM_PREFIX/SECRET_KEY" true)
-    ALGORITHM=$(get_ssm_val "$SSM_PREFIX/ALGORITHM" false)
-    ACCESS_TOKEN_EXPIRE_MINUTES=$(get_ssm_val "$SSM_PREFIX/ACCESS_TOKEN_EXPIRE_MINUTES" false)
+    DATABASE_URL=$(get_ssm_val "$SSM_PREFIX/DATABASE_URL")
+    POSTGRES_USER=$(get_ssm_val "$SSM_PREFIX/POSTGRES_USER")
+    POSTGRES_PASSWORD=$(get_ssm_val "$SSM_PREFIX/POSTGRES_PASSWORD")
+    POSTGRES_DB=$(get_ssm_val "$SSM_PREFIX/POSTGRES_DB")
+    POSTGRES_HOST=$(get_ssm_val "$SSM_PREFIX/POSTGRES_HOST")
+    POSTGRES_PORT=$(get_ssm_val "$SSM_PREFIX/POSTGRES_PORT")
+    SECRET_KEY=$(get_ssm_val "$SSM_PREFIX/SECRET_KEY")
+    ALGORITHM=$(get_ssm_val "$SSM_PREFIX/ALGORITHM")
+    ACCESS_TOKEN_EXPIRE_MINUTES=$(get_ssm_val "$SSM_PREFIX/ACCESS_TOKEN_EXPIRE_MINUTES")
 
     [ -z "$POSTGRES_PORT" ] && POSTGRES_PORT="5432"
     [ -z "$ALGORITHM" ] && ALGORITHM="HS256"
