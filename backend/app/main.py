@@ -23,8 +23,9 @@ app.add_middleware(
 )
 
 # Mount static files for uploads
-os.makedirs("static/uploads", exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+static_dir = os.getenv("STATIC_DIR", "/tmp/static" if os.getenv("AWS_LAMBDA_FUNCTION_NAME") else "static")
+os.makedirs(os.path.join(static_dir, "uploads"), exist_ok=True)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # All routes now start with /api/v1
 app.include_router(api_router, prefix="/api/v1")

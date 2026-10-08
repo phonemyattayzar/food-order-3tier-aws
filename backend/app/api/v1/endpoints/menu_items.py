@@ -1,6 +1,8 @@
 import os
 import shutil
 import uuid
+
+import boto3
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Request
 from sqlalchemy.orm import Session
@@ -24,8 +26,11 @@ from app.models.category import Category
 
 router = APIRouter(prefix="/menu-items", tags=["menu-items"])
 
-UPLOAD_DIR = "static/uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+STATIC_DIR = os.getenv("STATIC_DIR", "/tmp/static" if os.getenv("AWS_LAMBDA_FUNCTION_NAME") else "static")
+UPLOAD_DIR = os.path.join(STATIC_DIR, "uploads")
+UPLOADS_BUCKET = os.getenv("UPLOADS_BUCKET")
+if not UPLOADS_BUCKET:
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 @router.post("/upload")
@@ -40,14 +45,17 @@ async def upload_menu_item_image(request: Request, file: UploadFile = File(...))
     
     # 2. Generate a unique filename
     filename = f"{uuid.uuid4()}{file_ext}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    
-    # 3. Save file to disk
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-        
-    # 4. Return the accessible path
-    image_url = f"/static/uploads/{filename}"
+    if UPLOADS_BUCKET:
+        boto3.client("s3").upload_fileobj(
+            file.file, UPLOADS_BUCKET, f"uploads/{filename}",
+            ExtraArgs={"ContentType": file.content_type or "application/octet-stream"},
+        )
+        image_url = f"/uploads/{filename}"
+    else:
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        image_url = f"/static/uploads/{filename}"
     return {"image_url": image_url}
 
 

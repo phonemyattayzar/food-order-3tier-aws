@@ -208,3 +208,13 @@ cd /opt/food-order-3tier-aws/current
 | List release history | `ls -lt /opt/food-order-3tier-aws/releases/` |
 
 > ⚠️ **Caution**: Never run `docker compose down -v`. The `-v` flag will destroy the named Docker volume `postgres_data`, resulting in permanent database loss. Use `docker compose down` instead.
+
+## AWS Lambda release pipeline (deploy/lambda branch)
+
+The `deploy/lambda` branch also supports the serverless infrastructure in `food-order-serverless-infra`. It contains the Lambda entry points (`lambda_handler.py` and `migrate_handler.py`) and `deploy/lambda/build.sh`, which packages the FastAPI app, Alembic revisions, Python dependencies, and the Vite frontend into `build/deployment-bundle.tar.gz`.
+
+On each push to this branch, `.github/workflows/build-and-publish-lambda.yml` builds the release, uploads it to the private artifact bucket at `releases/<commit-sha>-<workflow-run-id>/deployment-bundle.tar.gz`, then dispatches that exact SHA to the infra repository. The infra pipeline plans and deploys the release, then runs Alembic migrations. The source workflow does not deploy AWS resources itself.
+
+Configure GitHub Actions variables `AWS_REGION`, `ARTIFACT_BUCKET`, and `INFRA_REPOSITORY` (`owner/repository`). Add the `AWS_ROLE_TO_ASSUME` secret for an AWS OIDC role restricted to this repository's `deploy/lambda` branch, with `s3:PutObject` permission only on `arn:aws:s3:::<artifact-bucket>/releases/*`. Add `INFRA_DISPATCH_TOKEN` as a fine-grained token with Contents: write permission on the infra repository (required by GitHub repository dispatch). The infra repository separately needs its own OIDC role with permission to download releases and manage its Terraform stack/state.
+
+The source tree loads DB credentials and `SECRET_KEY` from Secrets Manager when `DB_SECRET_ARN` is set. Menu image uploads use the `UPLOADS_BUCKET` S3 bucket in Lambda; local development continues to save them under `static/uploads`. Do not put production credentials in the release bundle.
