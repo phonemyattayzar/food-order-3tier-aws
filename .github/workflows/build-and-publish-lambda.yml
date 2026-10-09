@@ -3,6 +3,7 @@ name: Build and publish Lambda release
 on:
   push:
     branches: [deploy/lambda]
+    tags: ['v*']
 
 permissions:
   id-token: write
@@ -13,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -37,13 +40,67 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          git fetch origin deploy/lambda
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/deploy/lambda || {
+            echo "Release tags must point to a commit on deploy/lambda." >&2
+            exit 1
+          }
+
+      - name: Resolve release metadata
+        id: release
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            version="$REF_NAME"
+            tag="$REF_NAME"
+          else
+            version="${GITHUB_SHA}-${GITHUB_RUN_ID}"
+            tag=""
+          fi
+          if [[ ! "$version" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "Release version contains unsupported characters: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - name: Build Lambda and frontend artifacts
         run: ./deploy/lambda/build.sh
+
+      - name: Add release metadata to deployment bundle
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          SOURCE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          mkdir -p build/bundle
+          tar -xzf build/deployment-bundle.tar.gz -C build/bundle
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          metadata = {
+              "release_version": os.environ["RELEASE_VERSION"],
+              "source_tag": os.environ["SOURCE_TAG"] or None,
+              "source_commit": os.environ["GITHUB_SHA"],
+              "source_branch": "deploy/lambda",
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+          }
+          Path("build/bundle/release-metadata.json").write_text(
+              json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+          tar -czf build/deployment-bundle.tar.gz -C build/bundle .
 
       - name: Publish versioned artifact bundle
         env:
           ARTIFACT_BUCKET: ${{ vars.ARTIFACT_BUCKET }}
-          RELEASE_VERSION: ${{ github.sha }}-${{ github.run_id }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           aws s3 cp build/deployment-bundle.tar.gz \
             "s3://${ARTIFACT_BUCKET}/releases/${RELEASE_VERSION}/deployment-bundle.tar.gz" \
@@ -53,7 +110,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.INFRA_DISPATCH_TOKEN }}
           INFRA_REPOSITORY: ${{ vars.INFRA_REPOSITORY }}
-          RELEASE_VERSION: ${{ github.sha }}-${{ github.run_id }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           test -n "$INFRA_REPOSITORY" || (echo "Set INFRA_REPOSITORY to owner/repository" >&2; exit 1)
           curl --fail-with-body --silent --show-error \
