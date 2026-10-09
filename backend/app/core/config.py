@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str | None = None
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 11520
+    SUPPORT_TICKETS_ENABLED: bool = False
 
 
 settings = Settings()

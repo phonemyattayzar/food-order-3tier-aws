@@ -16,3 +16,4 @@ from app.models.audit_log import AuditLog
 from app.models.review import Review
 from app.models.coupon import Coupon
 from app.models.notification import Notification
+from app.models.support_ticket import SupportTicket
