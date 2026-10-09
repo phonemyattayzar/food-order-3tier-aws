@@ -1,4 +1,4 @@
-import { ChefHat, Sun, Sunset, Sparkles, User, LogOut, Package, ClipboardList, TrendingUp, ShieldAlert } from "lucide-react";
+import { ChefHat, Sun, Sunset, Sparkles, User, LogOut, Package, ClipboardList, TrendingUp, ShieldAlert, LifeBuoy } from "lucide-react";
 import NotificationBell from "./NotificationBell";
 
 export default function Header({
@@ -9,6 +9,8 @@ export default function Header({
   setSelectedRestaurant,
   onMyOrders,
   showMyOrders,
+  onSupportTickets,
+  showSupportTickets,
   onOrderManagement,
   showOrderManagement,
   pendingOrderCount,
@@ -110,6 +112,16 @@ export default function Header({
                 >
                   <Package size={14} />
                   <span>My Orders</span>
+                </button>
+              )}
+              {onSupportTickets && (
+                <button
+                  className={`btn btn-secondary ${showSupportTickets ? "active" : ""}`}
+                  onClick={onSupportTickets}
+                  style={{ padding: "6px 12px" }}
+                >
+                  <LifeBuoy size={14} />
+                  <span>Support</span>
                 </button>
               )}
               <div className="user-badge">

@@ -12,6 +12,7 @@ import MyOrdersView from "./components/MyOrdersView";
 import OrderHistoryView from "./components/OrderHistoryView";
 import OwnerAnalyticsView from "./components/OwnerAnalyticsView";
 import AdminDashboardView from "./components/AdminDashboardView";
+import SupportTicketsView from "./components/SupportTicketsView";
 import {
   apiRequest,
   fetchCurrentUser,
@@ -84,6 +85,11 @@ export default function App() {
   const [deliveryAddress, setDeliveryAddress] = useState("");
   const [checkoutSubmitting, setCheckoutSubmitting] = useState(false);
   const [showMyOrders, setShowMyOrders] = useState(false);
+  const [showSupportTickets, setShowSupportTickets] = useState(false);
+  const [supportTicketsEnabled, setSupportTicketsEnabled] = useState(false);
+  const [supportTickets, setSupportTickets] = useState([]);
+  const [supportTicketsLoading, setSupportTicketsLoading] = useState(false);
+  const [supportTicketSubmitting, setSupportTicketSubmitting] = useState(false);
   const [showOrderManagement, setShowOrderManagement] = useState(false);
   const [showAdminDashboard, setShowAdminDashboard] = useState(false);
   const [showOwnerDashboard, setShowOwnerDashboard] = useState(false);
@@ -137,6 +143,29 @@ export default function App() {
     fetchRestaurants();
     restoreSession();
   }, []);
+
+  useEffect(() => {
+    if (!activeUser) {
+      setSupportTicketsEnabled(false);
+      setSupportTickets([]);
+      return;
+    }
+
+    let cancelled = false;
+    apiRequest("/support-tickets/")
+      .then(({ res, data }) => {
+        if (cancelled) return;
+        setSupportTicketsEnabled(res.ok);
+        if (res.ok) setSupportTickets(data);
+      })
+      .catch(() => {
+        if (!cancelled) setSupportTicketsEnabled(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeUser?.id]);
 
   const fetchUsers = async () => {
     try {
@@ -233,6 +262,7 @@ export default function App() {
     clearSession();
     setCart([]);
     setShowMyOrders(false);
+    setShowSupportTickets(false);
     setShowOrderManagement(false);
     setShowAdminDashboard(false);
     setShowOwnerDashboard(false);
@@ -370,6 +400,7 @@ export default function App() {
     setShowOrderManagement(false);
     setShowAdminDashboard(false);
     setShowOwnerDashboard(false);
+    setShowSupportTickets(false);
     setShowMyOrders(true);
     fetchMyOrders();
   };
@@ -378,11 +409,71 @@ export default function App() {
     setShowMyOrders(false);
   };
 
+  const fetchSupportTickets = async () => {
+    setSupportTicketsLoading(true);
+    try {
+      const { res, data } = await apiRequest("/support-tickets/");
+      if (res.ok) {
+        setSupportTicketsEnabled(true);
+        setSupportTickets(data);
+        return true;
+      }
+      if (res.status === 404) setSupportTicketsEnabled(false);
+      showToast(parseApiError(data, "Could not load support requests"), "error");
+      return false;
+    } catch {
+      showToast("Could not load support requests", "error");
+      return false;
+    } finally {
+      setSupportTicketsLoading(false);
+    }
+  };
+
+  const handleOpenSupportTickets = () => {
+    setSelectedRestaurant(null);
+    setShowMyOrders(false);
+    setShowOrderManagement(false);
+    setShowAdminDashboard(false);
+    setShowOwnerDashboard(false);
+    setShowSupportTickets(true);
+    fetchSupportTickets();
+  };
+
+  const handleSubmitSupportTicket = async (ticket) => {
+    setSupportTicketSubmitting(true);
+    try {
+      const { res, data } = await apiRequest("/support-tickets/", {
+        method: "POST",
+        body: JSON.stringify(ticket),
+      });
+      if (res.status === 401) {
+        clearSession();
+        showToast("Session expired. Please log in again.", "error");
+        return false;
+      }
+      if (res.ok) {
+        setSupportTickets((current) => [data, ...current]);
+        showToast("Support request sent");
+        return true;
+      }
+      showToast(parseApiError(data, "Could not send support request"), "error");
+      return false;
+    } catch {
+      showToast("Could not send support request", "error");
+      return false;
+    } finally {
+      setSupportTicketSubmitting(false);
+    }
+  };
+
+  const handleBackFromSupportTickets = () => setShowSupportTickets(false);
+
   const handleOpenOrderManagement = () => {
     setSelectedRestaurant(null);
     setShowMyOrders(false);
     setShowAdminDashboard(false);
     setShowOwnerDashboard(false);
+    setShowSupportTickets(false);
     setShowOrderManagement(true);
     fetchOrderHistory(orderHistoryFilter);
   };
@@ -724,6 +815,7 @@ export default function App() {
     setShowOrderManagement(false);
     setShowAdminDashboard(false);
     setShowOwnerDashboard(false);
+    setShowSupportTickets(false);
     setSelectedRestaurant(restaurant);
     setCart([]);
     setShowCheckout(false);
@@ -766,12 +858,15 @@ export default function App() {
           setSelectedRestaurant(r);
           if (r === null) setCart([]);
           setShowMyOrders(false);
+          setShowSupportTickets(false);
           setShowOrderManagement(false);
           setShowAdminDashboard(false);
           setShowOwnerDashboard(false);
         }}
         onMyOrders={activeUser?.role === "customer" ? handleOpenMyOrders : undefined}
         showMyOrders={showMyOrders}
+        onSupportTickets={supportTicketsEnabled ? handleOpenSupportTickets : undefined}
+        showSupportTickets={showSupportTickets}
         onOrderManagement={
           activeUser?.role === "owner" || activeUser?.role === "admin"
             ? handleOpenOrderManagement
@@ -781,6 +876,7 @@ export default function App() {
         onOpenAdminDashboard={() => {
           setSelectedRestaurant(null);
           setShowMyOrders(false);
+          setShowSupportTickets(false);
           setShowOrderManagement(false);
           setShowOwnerDashboard(false);
           setShowAdminDashboard(true);
@@ -789,6 +885,7 @@ export default function App() {
         onOpenOwnerDashboard={() => {
           setSelectedRestaurant(null);
           setShowMyOrders(false);
+          setShowSupportTickets(false);
           setShowOrderManagement(false);
           setShowAdminDashboard(false);
           setShowOwnerDashboard(true);
@@ -847,6 +944,15 @@ export default function App() {
                 onCancel={handleCancelOrder}
                 actionId={orderActionId}
                 lastUpdated={ordersLastUpdated}
+              />
+            ) : showSupportTickets ? (
+              <SupportTicketsView
+                tickets={supportTickets}
+                loading={supportTicketsLoading}
+                submitting={supportTicketSubmitting}
+                onBack={handleBackFromSupportTickets}
+                onRefresh={fetchSupportTickets}
+                onSubmit={handleSubmitSupportTicket}
               />
             ) : selectedRestaurant ? (
               <RestaurantDetailView
