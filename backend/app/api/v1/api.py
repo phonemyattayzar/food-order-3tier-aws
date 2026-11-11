@@ -11,6 +11,7 @@ from app.api.v1.endpoints import (
     reviews,
     coupons,
     support_tickets,
+    favorite_customizations,
 )
 
 api_router = APIRouter()
@@ -25,3 +26,4 @@ api_router.include_router(notifications.router)
 api_router.include_router(reviews.router)
 api_router.include_router(coupons.router)
 api_router.include_router(support_tickets.router)
+api_router.include_router(favorite_customizations.router)

@@ -35,6 +35,8 @@ def notify_new_order(db: Session, order):
         f"Order {order.order_number} for {order.total_amount_mmk:,} MMK "
         f"is awaiting your approval."
     )
+    if order.customization_note:
+        message += f" Preparation: {order.customization_note}"
 
     create_notification(
         db,

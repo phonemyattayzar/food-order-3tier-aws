@@ -14,6 +14,7 @@ class OrderCreate(BaseModel):
     delivery_address: str
     items: List[OrderItemCreate]
     coupon_code: str | None = None
+    customization_note: str | None = None
 
 
 class OrderItemOut(BaseModel):
@@ -35,7 +36,8 @@ class OrderOut(BaseModel):
     order_status: str
     total_amount_mmk: int
     delivery_address: str
-    
+    customization_note: str | None = None
+
     rejection_reason: str | None = None
     accepted_at: datetime | None = None
     prepared_at: datetime | None = None

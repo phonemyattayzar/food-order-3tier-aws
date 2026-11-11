@@ -17,3 +17,4 @@ from app.models.review import Review
 from app.models.coupon import Coupon
 from app.models.notification import Notification
 from app.models.support_ticket import SupportTicket
+from app.models.favorite_customization import FavoriteCustomization, FavoriteCustomizationItem

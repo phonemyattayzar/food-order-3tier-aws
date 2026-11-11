@@ -33,6 +33,8 @@ class Order(Base):
 
     delivery_address = Column(Text, nullable=False)
 
+    customization_note = Column(Text, nullable=True)
+
     rejection_reason = Column(Text, nullable=True)
 
     # Status change timestamps

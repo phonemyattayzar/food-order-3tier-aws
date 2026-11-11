@@ -81,6 +81,7 @@ export default function App() {
   const [notification, setNotification] = useState(null);
 
   const [cart, setCart] = useState([]);
+  const [customizationNote, setCustomizationNote] = useState("");
   const [showCheckout, setShowCheckout] = useState(false);
   const [deliveryAddress, setDeliveryAddress] = useState("");
   const [checkoutSubmitting, setCheckoutSubmitting] = useState(false);
@@ -261,6 +262,7 @@ export default function App() {
   const handleLogout = () => {
     clearSession();
     setCart([]);
+    setCustomizationNote("");
     setShowMyOrders(false);
     setShowSupportTickets(false);
     setShowOrderManagement(false);
@@ -639,6 +641,7 @@ export default function App() {
           quantity: c.quantity,
         })),
         coupon_code: couponCode || null,
+        customization_note: customizationNote.trim() || null,
       };
 
       const { res, data } = await apiRequest("/orders/", {
@@ -655,6 +658,7 @@ export default function App() {
       if (res.ok) {
         showToast(`Order submitted! ${data.order_number} — awaiting restaurant approval`);
         setCart([]);
+        setCustomizationNote("");
         setShowCheckout(false);
         setDeliveryAddress("");
         setShowMyOrders(true);
@@ -666,6 +670,36 @@ export default function App() {
       showToast("Could not place order", "error");
     } finally {
       setCheckoutSubmitting(false);
+    }
+  };
+
+  const applyFavorite = (favorite) => {
+    const lines = [];
+    const skipped = [];
+    for (const item of favorite.items || []) {
+      if (!item.is_available || item.price_mmk == null) {
+        skipped.push(item.menu_item_name || "A dish");
+        continue;
+      }
+      lines.push({
+        menu_item_id: item.menu_item_id,
+        name: item.menu_item_name,
+        price_mmk: item.price_mmk,
+        quantity: item.quantity,
+        customization_note: "",
+      });
+    }
+    if (lines.length === 0) {
+      showToast("Those dishes are unavailable right now", "error");
+      return;
+    }
+    setCart(lines);
+    setCustomizationNote(favorite.customization_note || "");
+    setShowCheckout(true);
+    if (skipped.length > 0) {
+      showToast(`${favorite.name} is ready. Skipped unavailable: ${skipped.join(", ")}`);
+    } else {
+      showToast(`${favorite.name} is in your cart. Confirm the address to order.`);
     }
   };
 
@@ -818,6 +852,7 @@ export default function App() {
     setShowSupportTickets(false);
     setSelectedRestaurant(restaurant);
     setCart([]);
+    setCustomizationNote("");
     setShowCheckout(false);
     fetchRestaurantMenu(restaurant.id);
     setActiveCategoryFilter("all");
@@ -856,7 +891,10 @@ export default function App() {
         handleLogout={handleLogout}
         setSelectedRestaurant={(r) => {
           setSelectedRestaurant(r);
-          if (r === null) setCart([]);
+          if (r === null) {
+            setCart([]);
+            setCustomizationNote("");
+          }
           setShowMyOrders(false);
           setShowSupportTickets(false);
           setShowOrderManagement(false);
@@ -957,7 +995,6 @@ export default function App() {
             ) : selectedRestaurant ? (
               <RestaurantDetailView
                 selectedRestaurant={selectedRestaurant}
-                setSelectedRestaurant={setSelectedRestaurant}
                 activeUser={activeUser}
                 groupedMenu={groupedMenu}
                 activeCategoryFilter={activeCategoryFilter}
@@ -967,9 +1004,20 @@ export default function App() {
                 setMenuItemForm={setMenuItemForm}
                 canOrder={canOrder}
                 cart={cart}
+                customizationNote={customizationNote}
+                setCustomizationNote={setCustomizationNote}
                 onAddToCart={addToCart}
                 onUpdateCartQty={updateCartQty}
+                onApplyFavorite={applyFavorite}
+                onNotify={showToast}
                 onOpenCheckout={() => setShowCheckout(true)}
+                setSelectedRestaurant={(r) => {
+                  setSelectedRestaurant(r);
+                  if (r === null) {
+                    setCart([]);
+                    setCustomizationNote("");
+                  }
+                }}
                 onRefreshMenu={() => fetchRestaurantMenu(selectedRestaurant.id)}
               />
             ) : (
@@ -1025,6 +1073,8 @@ export default function App() {
         setDeliveryAddress={setDeliveryAddress}
         onPlaceOrder={handlePlaceOrder}
         submitting={checkoutSubmitting}
+        customizationNote={customizationNote}
+        setCustomizationNote={setCustomizationNote}
         restaurantName={selectedRestaurant?.name || ""}
         restaurantId={selectedRestaurant?.id || ""}
       />

@@ -37,6 +37,12 @@ export default function OrderCard({
         <span>{order.delivery_address}</span>
       </div>
 
+      {order.customization_note && (
+        <div className="order-meta-row">
+          <span className="order-customization-note">{order.customization_note}</span>
+        </div>
+      )}
+
       {order.order_items?.length > 0 && (
         <div className="order-items-block">
           {order.order_items.map((item) => (

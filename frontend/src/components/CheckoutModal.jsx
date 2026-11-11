@@ -10,6 +10,8 @@ export default function CheckoutModal({
   setDeliveryAddress,
   onPlaceOrder,
   submitting,
+  customizationNote,
+  setCustomizationNote,
   restaurantName,
   restaurantId,
 }) {
@@ -98,6 +100,9 @@ export default function CheckoutModal({
               <span>{(item.price_mmk * item.quantity).toLocaleString()} MMK</span>
             </div>
           ))}
+          {customizationNote.trim() && (
+            <p className="checkout-note">Preparation: {customizationNote.trim()}</p>
+          )}
 
           {discount > 0 && (
             <div className="checkout-line" style={{ color: "var(--accent-success)", fontWeight: "600" }}>
@@ -165,6 +170,19 @@ export default function CheckoutModal({
                 ✓ Coupon &quot;{appliedCoupon.code}&quot; applied successfully!
               </p>
             )}
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="customization-note">Preparation note</label>
+            <textarea
+              id="customization-note"
+              className="form-control"
+              rows="2"
+              maxLength={300}
+              placeholder="e.g. less spicy, no onion (အစပ်လျော့၊ ကြက်သွန်နီမပါ)"
+              value={customizationNote}
+              onChange={(e) => setCustomizationNote(e.target.value)}
+            />
           </div>
 
           <div className="form-group">

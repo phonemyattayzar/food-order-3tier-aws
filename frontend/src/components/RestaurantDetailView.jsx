@@ -14,6 +14,7 @@ import {
   Tag,
   Edit2,
   Trash2,
+  Bookmark,
 } from "lucide-react";
 import { apiRequest, parseApiError, getImageUrl } from "../api/client";
 import AddCouponModal from "./AddCouponModal";
@@ -30,8 +31,12 @@ export default function RestaurantDetailView({
   setMenuItemForm,
   canOrder,
   cart,
+  customizationNote,
+  setCustomizationNote,
   onAddToCart,
   onUpdateCartQty,
+  onApplyFavorite,
+  onNotify,
   onOpenCheckout,
   onRefreshMenu,
 }) {
@@ -53,6 +58,11 @@ export default function RestaurantDetailView({
 
   // Coupon State
   const [showAddCoupon, setShowAddCoupon] = useState(false);
+
+  const [favorites, setFavorites] = useState([]);
+  const [favoritesLoading, setFavoritesLoading] = useState(false);
+  const [favoriteName, setFavoriteName] = useState("My Usual");
+  const [savingFavorite, setSavingFavorite] = useState(false);
 
   const getCartQty = (menuItemId) => {
     const entry = cart.find((c) => c.menu_item_id === menuItemId);
@@ -95,10 +105,83 @@ export default function RestaurantDetailView({
     }
   };
 
+  const loadFavorites = async () => {
+    if (!canOrder) return;
+    setFavoritesLoading(true);
+    try {
+      const { res, data } = await apiRequest(
+        `/favorite-customizations/restaurant/${selectedRestaurant.id}`
+      );
+      if (res.ok) {
+        setFavorites(data);
+      }
+    } catch (err) {
+      console.error("Failed to load favorite customizations:", err);
+    } finally {
+      setFavoritesLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadReviewsAndRating();
     loadCompletedOrders();
+    loadFavorites();
   }, [selectedRestaurant.id]);
+
+  const handleSaveFavorite = async () => {
+    if (cart.length === 0) {
+      onNotify("Add dishes to your cart before saving a favorite", "error");
+      return;
+    }
+    if (!customizationNote.trim()) {
+      onNotify("Add how you like it prepared, such as less spicy or no onion", "error");
+      return;
+    }
+    setSavingFavorite(true);
+    try {
+      const { res, data } = await apiRequest("/favorite-customizations/", {
+        method: "POST",
+        body: JSON.stringify({
+          restaurant_id: selectedRestaurant.id,
+          name: favoriteName.trim() || "My Usual",
+          customization_note: customizationNote.trim(),
+          items: cart.map((item) => ({
+            menu_item_id: item.menu_item_id,
+            quantity: item.quantity,
+          })),
+        }),
+      });
+      if (res.ok) {
+        onNotify(`Saved “${data.name}”. Next time, order it in one tap.`);
+        setFavoriteName("My Usual");
+        loadFavorites();
+      } else {
+        onNotify(parseApiError(data, "Could not save this customization"), "error");
+      }
+    } catch {
+      onNotify("Could not save this customization", "error");
+    } finally {
+      setSavingFavorite(false);
+    }
+  };
+
+  const handleDeleteFavorite = async (favorite) => {
+    if (!window.confirm(`Remove “${favorite.name}”?`)) return;
+    try {
+      const { res, data } = await apiRequest(`/favorite-customizations/${favorite.id}`, {
+        method: "DELETE",
+        json: false,
+      });
+      if (res.ok || res.status === 204) {
+        setFavorites((prev) => prev.filter((item) => item.id !== favorite.id));
+        onNotify(`Removed “${favorite.name}”`);
+      } else {
+        onNotify(parseApiError(data, "Could not remove this customization"), "error");
+      }
+    } catch {
+      onNotify("Could not remove this customization", "error");
+    }
+  };
 
   const handleReviewSubmit = async (e) => {
     e.preventDefault();
@@ -259,10 +342,91 @@ export default function RestaurantDetailView({
       )}
 
       {canOrder && selectedRestaurant.is_open && (
-        <div className="card-glass" style={{ marginBottom: "24px", padding: "16px 20px", background: "rgba(5, 150, 105, 0.06)" }}>
-          <p style={{ fontSize: "0.875rem", color: "var(--text-secondary)", margin: 0 }}>
-            Tap <strong style={{ color: "var(--text-primary)" }}>Add</strong> on any available dish to build your cart, then checkout when ready.
-          </p>
+        <div className="card-glass favorite-panel">
+          <div className="favorite-panel-header">
+            <Bookmark size={18} color="var(--accent-primary)" />
+            <div>
+              <h3>Favorite customizations</h3>
+              <p>
+                Save a preparation you like, such as less spicy or no onion, as &quot;My Usual&quot; and order it again in one tap.
+              </p>
+            </div>
+          </div>
+
+          {favoritesLoading ? (
+            <p className="favorite-empty">Loading saved customizations...</p>
+          ) : favorites.length === 0 ? (
+            <p className="favorite-empty">No saved customizations for this restaurant yet.</p>
+          ) : (
+            <div className="favorite-list">
+              {favorites.map((favorite) => (
+                <div key={favorite.id} className="favorite-card">
+                  <div className="favorite-card-body">
+                    <div className="favorite-name">{favorite.name}</div>
+                    <div className="favorite-note">{favorite.customization_note}</div>
+                    <div className="favorite-items">
+                      {favorite.items.map((item) => (
+                        <span key={item.id}>
+                          {item.menu_item_name} × {item.quantity}
+                          {!item.is_available ? " (unavailable)" : ""}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="favorite-actions">
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => onApplyFavorite(favorite)}
+                    >
+                      Order this
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => handleDeleteFavorite(favorite)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="favorite-save">
+            <div className="form-group">
+              <label htmlFor="favorite-name">Name</label>
+              <input
+                id="favorite-name"
+                className="form-control"
+                maxLength={80}
+                value={favoriteName}
+                onChange={(e) => setFavoriteName(e.target.value)}
+                placeholder="My Usual"
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="favorite-note">How you like it</label>
+              <textarea
+                id="favorite-note"
+                className="form-control"
+                rows="2"
+                maxLength={300}
+                placeholder="e.g. less spicy, no onion (အစပ်လျော့၊ ကြက်သွန်နီမပါ)"
+                value={customizationNote}
+                onChange={(e) => setCustomizationNote(e.target.value)}
+              />
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleSaveFavorite}
+              disabled={savingFavorite || cart.length === 0}
+            >
+              {savingFavorite ? "Saving..." : "Save current cart"}
+            </button>
+          </div>
         </div>
       )}
 

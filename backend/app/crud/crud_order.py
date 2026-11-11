@@ -88,10 +88,15 @@ def create_order(db: Session, order_in: OrderCreate, user_id: UUID):
                 coupon_id_to_increment = coupon.id
             total_amount = max(0, total_amount - discount)
 
+        note = (order_in.customization_note or "").strip() or None
+        if note and len(note) > 300:
+            raise ValueError("Customization note must be 300 characters or fewer")
+
         db_order = Order(
             user_id=user_id,
             restaurant_id=order_in.restaurant_id,
             delivery_address=order_in.delivery_address,
+            customization_note=note,
             order_number=generate_order_number(),
             total_amount_mmk=total_amount,
             order_status=OrderStatus.pending,
